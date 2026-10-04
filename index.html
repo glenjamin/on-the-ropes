@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="theme-color" content="#120d1c" />
+    <title>On the Ropes</title>
+    <style>
+      html, body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #120d1c;
+        color: #f4ecff;
+        font-family: system-ui, -apple-system, sans-serif;
+        overscroll-behavior: none;
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+      canvas {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        touch-action: none;
+        display: block;
+      }
+      #hud {
+        position: fixed;
+        top: max(12px, env(safe-area-inset-top));
+        left: max(16px, env(safe-area-inset-left));
+        right: max(16px, env(safe-area-inset-right));
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        pointer-events: none;
+        font-variant-numeric: tabular-nums;
+        text-shadow: 0 1px 3px #000a;
+      }
+      #time { font-size: 22px; font-weight: 700; }
+      #best { font-size: 13px; opacity: 0.75; }
+      #restart {
+        pointer-events: auto;
+        background: #ffffff1f;
+        color: inherit;
+        border: 1px solid #ffffff33;
+        border-radius: 999px;
+        padding: 8px 14px;
+        font: inherit;
+        font-size: 14px;
+      }
+      #overlay {
+        position: fixed;
+        inset: 0;
+        display: none;
+        place-items: center;
+        text-align: center;
+        background: #120d1ccc;
+        pointer-events: none;
+      }
+      #overlay.show { display: grid; }
+      #overlay h1 { margin: 0 0 8px; font-size: 40px; }
+      #overlay p { margin: 4px 0; opacity: 0.85; }
+    </style>
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+    <div id="hud">
+      <div>
+        <div id="time">0.00</div>
+        <div id="best"></div>
+      </div>
+      <button id="restart" type="button">Restart</button>
+    </div>
+    <div id="overlay"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
