@@ -15,6 +15,9 @@ const AUTO_REEL_BURST = 450
 /** Seconds of game time to ease from the burst down to the steady speed. */
 const AUTO_REEL_EASE = 1.5
 const TRAIL_SECS = 1.8
+/** Touches this close (CSS px) to the sides or bottom are hands gripping the phone, not taps. */
+const GRIP_EDGE_SIDES = 28
+const GRIP_EDGE_BOTTOM = 48
 /** The camera zooms out by up to this fraction as the player speeds up, so fast flights show more ahead. */
 const SPEED_ZOOM_OUT = 0.13
 /** Speed (game units/s) at which the camera is fully zoomed out. */
@@ -81,6 +84,7 @@ canvas.addEventListener('touchstart', (e) => e.preventDefault(), { passive: fals
 
 // Taps alternate: fire at the tapped point, then let go
 canvas.addEventListener('pointerdown', (e) => {
+  if (e.pointerType === 'touch' && inGripZone(e.clientX, e.clientY)) return
   enterFullscreen()
   if (phase !== 'play') return
   tapRings.push({ at: screenToWorld(e.clientX, e.clientY), t: performance.now() / 1000 })
@@ -282,6 +286,10 @@ function lockLandscape() {
   try {
     screen.orientation.lock('landscape').catch(() => {})
   } catch {}
+}
+
+function inGripZone(x: number, y: number): boolean {
+  return x < GRIP_EDGE_SIDES || x > innerWidth - GRIP_EDGE_SIDES || y > innerHeight - GRIP_EDGE_BOTTOM
 }
 
 function autoReelSpeed(ropeAge: number): number {

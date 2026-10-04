@@ -6,6 +6,7 @@ import { withBrowser } from './browser.ts'
 
 const LANDSCAPE: BrowserContextOptions = { viewport: { width: 844, height: 390 } }
 const PORTRAIT_PHONE: BrowserContextOptions = { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true }
+const LANDSCAPE_PHONE: BrowserContextOptions = { viewport: { width: 844, height: 390 }, hasTouch: true, isMobile: true }
 
 /** Name, check, and the device to run it on (a landscape desktop window by default). */
 const CHECKS: [string, (page: Page) => Promise<void>, BrowserContextOptions?][] = [
@@ -110,6 +111,21 @@ const CHECKS: [string, (page: Page) => Promise<void>, BrowserContextOptions?][] 
       assert.ok(await page.isEnabled('.level-btn[data-level="1"]'), '1-2 should now be unlocked')
       assert.match(await page.textContent('.level-btn[data-level="0"]') ?? '', /\d+\.\d\ds/)
     },
+  ],
+  [
+    'touches at the sides and bottom of a phone screen are ignored as grip, while taps elsewhere fire',
+    async (page) => {
+      for (const [x, y] of [[10, 200], [834, 200], [422, 380], [10, 385]]) {
+        await page.touchscreen.tap(x, y)
+        await page.waitForTimeout(150)
+        const after = await state(page)
+        assert.ok(!after.rope && !after.hookFlying, `touch at ${x},${y} should be ignored`)
+      }
+      await page.touchscreen.tap(520, 120)
+      await page.waitForTimeout(300)
+      assert.ok((await state(page)).rope, 'a tap away from the edges should fire the rope')
+    },
+    LANDSCAPE_PHONE,
   ],
   [
     'held in portrait, a phone shows the rotate prompt and taps do nothing',
