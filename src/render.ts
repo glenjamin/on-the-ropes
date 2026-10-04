@@ -3,6 +3,10 @@ import type { Level } from './level'
 import { RADIUS, type Sim } from './sim'
 
 export type Camera = { pos: Vec; zoom: number }
+/** Transient visuals: the player's recent path (oldest first) and rings where the screen was tapped. */
+export type Effects = { trail: Vec[]; tapRings: { at: Vec; age: number }[] }
+
+export const TAP_RING_SECS = 0.4
 
 const STARS = Array.from({ length: 140 }, (_, i) => ({
   x: hash(i * 3.1) * 4000,
@@ -10,7 +14,7 @@ const STARS = Array.from({ length: 140 }, (_, i) => ({
   r: 0.6 + hash(i * 1.3) * 1.4,
 }))
 
-export function render(ctx: CanvasRenderingContext2D, w: number, h: number, cam: Camera, level: Level, sim: Sim, time: number) {
+export function render(ctx: CanvasRenderingContext2D, w: number, h: number, cam: Camera, level: Level, sim: Sim, fx: Effects, time: number) {
   const sky = ctx.createLinearGradient(0, 0, 0, h)
   sky.addColorStop(0, '#120d1c')
   sky.addColorStop(0.65, '#2a1733')
@@ -28,15 +32,24 @@ export function render(ctx: CanvasRenderingContext2D, w: number, h: number, cam:
   drawGoal(ctx, level, time)
   drawTerrain(ctx, level)
   drawRope(ctx, sim)
+  drawTrail(ctx, fx.trail)
   drawPlayer(ctx, sim)
   drawLava(ctx, level, cam, w, h, time)
+  drawTapRings(ctx, fx.tapRings)
 
   ctx.restore()
+  drawGoalArrow(ctx, w, h, cam, level, sim, time)
 }
 
 /** World-to-screen scale for a viewport, so the playfield reads similarly on phones and desktops. */
 export function zoomFor(w: number, h: number): number {
-  return Math.max(0.45, Math.min(1.4, Math.sqrt(w * h) / 680))
+  return Math.max(0.45, Math.min(1.4, Math.sqrt(w * h) / 850))
+}
+
+/** Where to centre the camera to follow `p`, keeping it below the middle so more of what's above is in view. */
+export function cameraFocus(p: Vec, viewH: number, zoom: number): Vec {
+  const raise = 0.25
+  return { x: p.x, y: p.y - (viewH / 2 / zoom) * raise }
 }
 
 function drawStars(ctx: CanvasRenderingContext2D, cam: Camera, w: number, h: number) {
@@ -86,6 +99,31 @@ function drawRope(ctx: CanvasRenderingContext2D, sim: Sim) {
     ctx.lineTo(sim.hook.pos.x, sim.hook.pos.y)
     ctx.stroke()
     drawHookHead(ctx, sim.hook.pos)
+  }
+}
+
+/** A thin line along the actual path, white at the player fading to cyan at the tail. */
+function drawTrail(ctx: CanvasRenderingContext2D, trail: Vec[]) {
+  ctx.lineWidth = 3
+  ctx.lineCap = 'round'
+  for (let i = 1; i < trail.length; i++) {
+    const k = i / trail.length
+    ctx.strokeStyle = `rgba(${Math.round(80 + 175 * k)}, ${Math.round(220 + 35 * k)}, 255, ${0.9 * k})`
+    ctx.beginPath()
+    ctx.moveTo(trail[i - 1].x, trail[i - 1].y)
+    ctx.lineTo(trail[i].x, trail[i].y)
+    ctx.stroke()
+  }
+}
+
+function drawTapRings(ctx: CanvasRenderingContext2D, rings: Effects['tapRings']) {
+  ctx.lineWidth = 3
+  for (const { at, age } of rings) {
+    const k = Math.min(1, age / TAP_RING_SECS)
+    ctx.strokeStyle = `rgba(255, 255, 255, ${0.8 * (1 - k)})`
+    ctx.beginPath()
+    ctx.arc(at.x, at.y, 12 + 36 * k, 0, Math.PI * 2)
+    ctx.stroke()
   }
 }
 
@@ -155,6 +193,34 @@ function drawLava(ctx: CanvasRenderingContext2D, level: Level, cam: Camera, w: n
   ctx.lineTo(right + step, Math.max(bottom, level.lavaY + 40))
   ctx.closePath()
   ctx.fill()
+}
+
+/** Sits at the top-middle of the screen pointing from the player towards the goal, while the goal is off screen. */
+function drawGoalArrow(ctx: CanvasRenderingContext2D, w: number, h: number, cam: Camera, level: Level, sim: Sim, time: number) {
+  const toScreen = (p: Vec) => ({ x: (p.x - cam.pos.x) * cam.zoom + w / 2, y: (p.y - cam.pos.y) * cam.zoom + h / 2 })
+  const goal = toScreen(level.goal.pos)
+  const margin = 40
+  if (goal.x > margin && goal.x < w - margin && goal.y > margin && goal.y < h - margin) return
+
+  const player = toScreen(sim.pos)
+  const dir = norm({ x: goal.x - player.x, y: goal.y - player.y })
+  const bob = Math.sin(time * 4) * 4
+  ctx.save()
+  ctx.translate(w / 2 + dir.x * bob, 64 + dir.y * bob)
+  ctx.rotate(Math.atan2(dir.y, dir.x))
+  ctx.beginPath()
+  ctx.moveTo(14, 0)
+  ctx.lineTo(-8, -11)
+  ctx.lineTo(-3, 0)
+  ctx.lineTo(-8, 11)
+  ctx.closePath()
+  ctx.fillStyle = '#8cffb4'
+  ctx.strokeStyle = '#120d1c'
+  ctx.lineWidth = 2
+  ctx.globalAlpha = 0.9
+  ctx.fill()
+  ctx.stroke()
+  ctx.restore()
 }
 
 function drawHookHead(ctx: CanvasRenderingContext2D, p: Vec) {

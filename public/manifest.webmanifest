@@ -1,0 +1,9 @@
+{
+  "name": "On the Ropes",
+  "short_name": "Ropes",
+  "start_url": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#120d1c",
+  "theme_color": "#120d1c"
+}

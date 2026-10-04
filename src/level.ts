@@ -21,7 +21,7 @@ export function buildLevel(): Level {
     rect(-400, -800, 400, 2200),
     rect(6800, -800, 400, 2200),
     // Start and goal platforms
-    rect(0, 700, 360, 700),
+    rect(0, 450, 360, 950),
     rect(6250, 680, 550, 720),
 
     // First cave roof, jagged underside
@@ -52,7 +52,7 @@ export function buildLevel(): Level {
   ]
   return {
     polys: shapes.map(makePoly),
-    start: vec(180, 680),
+    start: vec(180, 430),
     goal: { pos: vec(6520, 620), radius: 40 },
     lavaY: 1200,
   }

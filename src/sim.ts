@@ -16,23 +16,27 @@ import {
 import type { Level } from './level'
 
 export const RADIUS = 12
-export const HOOK_RANGE = 760
+export const HOOK_RANGE = 1000
 
-const GRAVITY = 1400
-const HOOK_SPEED = 3400
-const ROPE_MAX = 1000
-const ROPE_MIN_FREE = 24
-const PUMP_ACCEL = 650
-const AIR_ACCEL = 220
-const MAX_SPEED = 1900
-const BOUNCE = 0.35
-const GROUND_FRICTION = 10
+const HOOK_SPEED = 6000
+/** Shortest the rope can reel to; it can still be stretched longer than this when wrapped round corners. */
+const ROPE_MIN_LENGTH = 24
+const MAX_SPEED = 900
+/** Walls give back some speed; floors and ceilings absorb most of it. */
+const WALL_BOUNCE = 0.4
+const CEILING_BOUNCE = 0.25
+const FLOOR_BOUNCE = 0.15
+/** Low, so the floor feels like ice. */
+const GROUND_FRICTION = 0.3
 const ANCHOR_OFFSET = 1.5
+/** Fraction of critical damping on the rope's stretch, so bungee bounces die away. */
+const ROPE_DAMPING = 0.15
 
 /** A point the rope passes through; `side` records which way it bent so it can unbend. */
 type Anchor = { p: Vec; side: number }
 
-export type Rope = { anchors: Anchor[]; length: number }
+/** `age` is how long the rope has been attached. */
+export type Rope = { anchors: Anchor[]; length: number; age: number }
 export type Hook = { origin: Vec; pos: Vec; dir: Vec; travelled: number }
 
 export class Sim {
@@ -41,6 +45,12 @@ export class Sim {
   rope: Rope | null = null
   hook: Hook | null = null
   grounded = false
+  /** Rope spring constant (per s²): very high is effectively rigid, low is a stretchy bungee. */
+  stiffness = 30
+  /** Rope rest length on grabbing, as a fraction of the distance to the anchor; below 1 it pulls straight away. */
+  startLength = 0.3
+  /** Downward acceleration, units/s². */
+  gravity = 2000
 
   constructor(private level: Level) {
     this.pos = { ...level.start }
@@ -63,18 +73,13 @@ export class Sim {
     this.hook = null
   }
 
-  /** Lengthen (positive) or shorten (negative) the rope. */
-  reel(delta: number) {
-    const rope = this.rope
-    if (!rope) return
-    const fixed = fixedLength(rope)
-    rope.length = Math.max(fixed + ROPE_MIN_FREE, Math.min(ROPE_MAX, rope.length + delta))
-  }
-
-  step(dt: number, pump: number) {
+  /** Advances by dt while reeling the rope out (positive speed) or in (negative). */
+  step(dt: number, reelSpeed: number) {
     const prev = this.pos
-    const accelX = pump * (this.rope ? PUMP_ACCEL : AIR_ACCEL)
-    this.vel = add(this.vel, { x: accelX * dt, y: GRAVITY * dt })
+    if (this.rope) this.rope.age += dt
+    this.reel(reelSpeed * dt)
+    this.vel.y += this.gravity * dt
+    this.pullOnRope(dt)
     const speed = len(this.vel)
     if (speed > MAX_SPEED) this.vel = scale(this.vel, MAX_SPEED / speed)
     this.pos = add(this.pos, scale(this.vel, dt))
@@ -83,9 +88,29 @@ export class Sim {
     const firedFrom = this.advanceHook(dt)
     if (this.rope) {
       this.updateWraps(firedFrom ?? prev)
-      this.constrainToRope()
     }
     this.collide(dt)
+  }
+
+  /** Changes the rope's rest length; reeling in a taut rope stretches it, and the stretch pulls the player in. */
+  private reel(delta: number) {
+    const rope = this.rope
+    if (!rope || delta === 0) return
+    rope.length = Math.max(ROPE_MIN_LENGTH, Math.min(HOOK_RANGE, rope.length + delta))
+  }
+
+  /** The rope is a bungee: slack when shorter than its rest length, pulling back in proportion to any stretch. */
+  private pullOnRope(dt: number) {
+    const rope = this.rope
+    if (!rope) return
+    const toPivot = sub(rope.anchors[rope.anchors.length - 1].p, this.pos)
+    const l = len(toPivot)
+    const stretch = fixedLength(rope) + l - rope.length
+    if (stretch <= 0 || l < 1e-6) return
+    const n = scale(toPivot, 1 / l)
+    const damping = 2 * ROPE_DAMPING * Math.sqrt(this.stiffness) * dot(this.vel, n)
+    const pull = Math.max(0, this.stiffness * stretch - damping)
+    this.vel = add(this.vel, scale(n, pull * dt))
   }
 
   /** Moves the hook, returning where it was fired from if it attached. */
@@ -97,7 +122,7 @@ export class Sim {
     const hit = this.raycast(hook.pos, next)
     if (hit) {
       const p = add(hit.point, scale(hit.normal, ANCHOR_OFFSET))
-      this.rope = { anchors: [{ p, side: 0 }], length: Math.max(ROPE_MIN_FREE, dist(p, this.pos)) }
+      this.rope = { anchors: [{ p, side: 0 }], length: Math.max(ROPE_MIN_LENGTH, dist(p, this.pos) * this.startLength), age: 0 }
       this.hook = null
       return hook.origin
     }
@@ -124,21 +149,7 @@ export class Sim {
       if (!corner) break
       const side = Math.sign(cross(sub(corner, pivot), sub(this.pos, pivot)))
       anchors.push({ p: corner, side })
-      if (rope.length - fixedLength(rope) < ROPE_MIN_FREE) rope.length = fixedLength(rope) + ROPE_MIN_FREE
     }
-  }
-
-  private constrainToRope() {
-    const rope = this.rope!
-    const pivot = rope.anchors[rope.anchors.length - 1].p
-    const free = rope.length - fixedLength(rope)
-    const d = sub(this.pos, pivot)
-    const l = len(d)
-    if (l <= free) return
-    const n = scale(d, 1 / l)
-    this.pos = add(pivot, scale(n, free))
-    const outward = dot(this.vel, n)
-    if (outward > 0) this.vel = sub(this.vel, scale(n, outward))
   }
 
   private collide(dt: number) {
@@ -153,12 +164,15 @@ export class Sim {
         if (l >= RADIUS) continue
         const n = l > 1e-6 ? scale(d, 1 / l) : poly.edgeNormals[i]
         this.pos = add(c, scale(n, RADIUS))
+        const isFloor = n.y < -0.6
+        const isCeiling = n.y > 0.6
         const vn = dot(this.vel, n)
         if (vn < 0) {
-          const bounce = vn < -120 ? BOUNCE : 0
+          const restitution = isFloor ? FLOOR_BOUNCE : isCeiling ? CEILING_BOUNCE : WALL_BOUNCE
+          const bounce = vn < -120 ? restitution : 0
           this.vel = sub(this.vel, scale(n, vn * (1 + bounce)))
         }
-        if (n.y < -0.6) this.grounded = true
+        if (isFloor) this.grounded = true
       }
     }
     if (this.grounded && !this.rope) this.vel.x *= Math.exp(-GROUND_FRICTION * dt)
