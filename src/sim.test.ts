@@ -3,7 +3,7 @@ import { dist, pointInPolygon, segmentHit, type Vec } from './geom'
 import { gongCentre } from './gong'
 import { buildLevel, type Level, type LevelData } from './level'
 import lavaCave from './levels/1-2'
-import { Sim } from './sim'
+import { GONG_CORD_LENGTH, Sim } from './sim'
 
 const DT = 1 / 240
 const REEL_SPEED = 450
@@ -135,7 +135,7 @@ describe('swinging on the rope', () => {
     expect(bursts.vel.x).toBe(afterBurst)
   })
 
-  it('striking the gong bounces the player off it, swings it, and keeps them caught nearby', () => {
+  it('striking the gong bounces the player off it once, swings it, and keeps them caught on a short cord', () => {
     const level = buildLevel(lavaCave)
     const sim = new Sim(level)
     sim.pos = { x: level.goal.pos.x - 70, y: level.goal.pos.y }
@@ -144,6 +144,7 @@ describe('swinging on the rope', () => {
     sim.catchOnGong()
 
     let furthest = 0
+    let closest = Infinity
     let bouncedBack = false
     let biggestSwing = 0
     for (let t = 0; t < 4; t += DT) {
@@ -152,11 +153,14 @@ describe('swinging on the rope', () => {
       if (sim.vel.x < -100) bouncedBack = true
       biggestSwing = Math.max(biggestSwing, gong.swing)
       furthest = Math.max(furthest, dist(sim.pos, gongCentre(gong)))
+      if (bouncedBack) closest = Math.min(closest, dist(sim.pos, gongCentre(gong)))
     }
     expect(bouncedBack).toBe(true)
     expect(biggestSwing).toBeGreaterThan(0.05)
-    expect(sim.gong!.hits.length).toBeGreaterThan(0)
-    expect(furthest).toBeLessThan(level.goal.radius + 12 + 25 + 50)
+    expect(sim.gong!.hits).toHaveLength(1)
+    // After the bounce the cord pulls the player in front of the disc rather than off it again
+    expect(closest).toBeLessThan(level.goal.radius + 12)
+    expect(furthest).toBeLessThan(GONG_CORD_LENGTH + 50)
   })
 
   it('never lets the player or the rope pass through terrain during random play', () => {

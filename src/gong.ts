@@ -11,6 +11,8 @@ export type Gong = {
   swingVel: number
   /** Sim times of each solid hit, for the ring-out effect. */
   hits: number[]
+  /** The player bounces off the disc once; after that they pass in front of it. */
+  bounced: boolean
 }
 
 const CORD = 14
@@ -20,7 +22,7 @@ const SWING_DAMPING = 0.8
 /** A gong at rest, its disc centred on `centre`. */
 export function restingGong(centre: Vec, radius: number): Gong {
   const hang = radius + CORD
-  return { pivot: { x: centre.x, y: centre.y - hang }, hang, radius, swing: 0, swingVel: 0, hits: [] }
+  return { pivot: { x: centre.x, y: centre.y - hang }, hang, radius, swing: 0, swingVel: 0, hits: [], bounced: false }
 }
 
 export function gongCentre(gong: Gong): Vec {

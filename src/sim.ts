@@ -32,8 +32,8 @@ const GROUND_FRICTION = 0.3
 const ANCHOR_OFFSET = 1.5
 /** Fraction of critical damping on the rope's stretch, so bungee bounces die away. */
 const ROPE_DAMPING = 0.15
-/** Once the gong is struck the player is held near it by a short, stiff, invisible bungee. */
-const GONG_TETHER_SLACK = 25
+/** Once the gong is struck the player is held to its centre by a short, stiff cord. */
+export const GONG_CORD_LENGTH = 47
 const GONG_TETHER_STIFFNESS = 200
 const GONG_BOUNCE = 0.7
 /** How much of the player's impact speed goes into swinging the gong. */
@@ -120,17 +120,18 @@ export class Sim {
     const away = sub(this.pos, centre)
     const l = len(away)
     const touching = gong.radius + RADIUS
-    if (l < touching && l > 1e-6) {
+    if (!gong.bounced && l < touching && l > 1e-6) {
       const n = scale(away, 1 / l)
       this.pos = add(centre, scale(n, touching))
       const vn = dot(this.vel, n)
       if (vn < 0) {
         this.vel = sub(this.vel, scale(n, vn * (1 + GONG_BOUNCE)))
         gong.swingVel += n.x * vn * GONG_KICK
-        if (vn < -80) gong.hits.push(this.time)
+        gong.hits.push(this.time)
+        gong.bounced = true
       }
     }
-    const stretch = l - (touching + GONG_TETHER_SLACK)
+    const stretch = l - GONG_CORD_LENGTH
     if (stretch > 0) {
       const n = scale(away, -1 / l)
       const damping = 2 * ROPE_DAMPING * Math.sqrt(GONG_TETHER_STIFFNESS) * dot(this.vel, n)

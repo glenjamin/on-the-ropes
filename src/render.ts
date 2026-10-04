@@ -1,7 +1,7 @@
 import { norm, type Vec } from './geom'
 import { gongCentre, restingGong } from './gong'
 import { gustStrength, type Level, type Theme } from './level'
-import { RADIUS, type Sim } from './sim'
+import { GONG_CORD_LENGTH, RADIUS, type Sim } from './sim'
 
 export type Camera = { pos: Vec; zoom: number }
 /** Transient visuals: the player's recent path (oldest first) and rings where the screen was tapped. */
@@ -275,6 +275,8 @@ function drawGong(ctx: CanvasRenderingContext2D, level: Level, sim: Sim) {
   ctx.arc(centre.x, centre.y, r * 0.22, 0, Math.PI * 2)
   ctx.fill()
 
+  if (sim.gong) drawGongCord(ctx, centre, sim.pos)
+
   ctx.lineWidth = 3
   for (const hit of gong.hits) {
     const age = sim.time - hit
@@ -442,6 +444,20 @@ function drawSplash(ctx: CanvasRenderingContext2D, { at, age }: NonNullable<Effe
     ctx.arc(at.x + (hash(i * 6.1) - 0.5) * 70 + Math.sin(t * 3 + i) * 10, surface - 15 - t * 110, 16 + 40 * k, 0, Math.PI * 2)
     ctx.fill()
   }
+}
+
+/** The short cord holding the ninja to a struck gong, in the headband's red; it sags while slack. */
+function drawGongCord(ctx: CanvasRenderingContext2D, from: Vec, to: Vec) {
+  const length = GONG_CORD_LENGTH
+  const span = Math.hypot(to.x - from.x, to.y - from.y)
+  const sag = Math.sqrt(Math.max(0, length * length - span * span)) * 0.5
+  ctx.strokeStyle = '#e63946'
+  ctx.lineWidth = 2.5
+  ctx.lineCap = 'round'
+  ctx.beginPath()
+  ctx.moveTo(from.x, from.y)
+  ctx.quadraticCurveTo((from.x + to.x) / 2, (from.y + to.y) / 2 + sag, to.x, to.y)
+  ctx.stroke()
 }
 
 function drawHookHead(ctx: CanvasRenderingContext2D, p: Vec) {
