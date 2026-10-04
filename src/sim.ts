@@ -17,7 +17,7 @@ import { gongCentre, restingGong, swingGong, type Gong } from './gong'
 import { gustStrength, type Level } from './level'
 
 export const RADIUS = 12
-export const HOOK_RANGE = 1000
+export const HOOK_RANGE = 700
 
 const HOOK_SPEED = 6000
 /** Shortest the rope can reel to; it can still be stretched longer than this when wrapped round corners. */
