@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { dist, pointInPolygon, segmentHit, type Vec } from './geom'
 import { buildLevel, type Level } from './level'
+import lavaCave from './levels/1-2'
 import { Sim } from './sim'
 
 const DT = 1 / 240
@@ -8,7 +9,7 @@ const REEL_SPEED = 450
 
 describe('swinging on the rope', () => {
   it('hangs below where the rope grabbed, stretched by the player’s weight', () => {
-    const sim = new Sim(buildLevel())
+    const sim = new Sim(buildLevel(lavaCave))
     sim.fire({ x: 0, y: -1 })
     run(sim, 1, -200)
     run(sim, 3, 0)
@@ -25,7 +26,7 @@ describe('swinging on the rope', () => {
 
   it('reeling in pulls the player up towards where the rope grabbed', () => {
     const distanceAfter = (reelSpeed: number) => {
-      const sim = new Sim(buildLevel())
+      const sim = new Sim(buildLevel(lavaCave))
       sim.fire({ x: 0, y: -1 })
       run(sim, 1.5, reelSpeed)
       return dist(sim.pos, sim.rope!.anchors[0].p)
@@ -35,7 +36,7 @@ describe('swinging on the rope', () => {
 
   it('grabbing with a shorter start length pulls the player in straight away', () => {
     const pulledIn = (startLength: number) => {
-      const sim = new Sim(buildLevel())
+      const sim = new Sim(buildLevel(lavaCave))
       sim.startLength = startLength
       sim.fire({ x: 0, y: -1 })
       run(sim, 0.15, 0)
@@ -49,7 +50,7 @@ describe('swinging on the rope', () => {
 
   it('a stiff rope barely stretches, a soft one stretches like a bungee', () => {
     const maxStretch = (stiffness: number) => {
-      const sim = new Sim(buildLevel())
+      const sim = new Sim(buildLevel(lavaCave))
       sim.stiffness = stiffness
       sim.startLength = 1
       sim.fire({ x: Math.sin(0.6), y: -Math.cos(0.6) })
@@ -65,7 +66,7 @@ describe('swinging on the rope', () => {
   })
 
   it('falls no faster than the speed limit', () => {
-    const sim = new Sim(buildLevel())
+    const sim = new Sim(buildLevel(lavaCave))
     sim.pos = { x: 1950, y: -500 }
     let top = 0
     for (let t = 0; t < 1.8; t += DT) {
@@ -76,13 +77,13 @@ describe('swinging on the rope', () => {
   })
 
   it('rebounds off walls but mostly absorbs hits on floors and ceilings', () => {
-    const wall = new Sim(buildLevel())
+    const wall = new Sim(buildLevel(lavaCave))
     wall.pos = { x: 60, y: 200 }
     wall.vel = { x: -600, y: 0 }
     run(wall, 0.2, 0)
     expect(wall.vel.x).toBeGreaterThan(600 * 0.3)
 
-    const floor = new Sim(buildLevel())
+    const floor = new Sim(buildLevel(lavaCave))
     floor.pos = { x: 180, y: 380 }
     floor.vel = { x: 0, y: 600 }
     let rebound = 0
@@ -92,7 +93,7 @@ describe('swinging on the rope', () => {
     }
     expect(rebound).toBeLessThan(600 * 0.2)
 
-    const ceiling = new Sim(buildLevel())
+    const ceiling = new Sim(buildLevel(lavaCave))
     ceiling.pos = { x: 180, y: 200 }
     ceiling.vel = { x: 0, y: -600 }
     let afterHit = 0
@@ -104,7 +105,7 @@ describe('swinging on the rope', () => {
   })
 
   it('slides along the floor like ice', () => {
-    const sim = new Sim(buildLevel())
+    const sim = new Sim(buildLevel(lavaCave))
     sim.pos = { x: 6300, y: 668 }
     sim.vel = { x: 300, y: 0 }
     run(sim, 1, 0)
@@ -131,7 +132,7 @@ describe('swinging on the rope', () => {
 
 /** Fires at random upward angles, reeling in for a while then letting go, like an eager player. */
 function randomPlay(attempts: number) {
-  const level = buildLevel()
+  const level = buildLevel(lavaCave)
   const sim = new Sim(level)
   const random = seededRandom(1)
   const stats = { attaches: 0, maxBends: 0, unbends: 0, stepsInsideTerrain: 0, stepsRopeThroughTerrain: 0, stepsRopeLengthened: 0 }

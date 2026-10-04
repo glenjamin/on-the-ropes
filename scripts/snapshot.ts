@@ -1,6 +1,6 @@
 // Screenshots scripted game states (debug/scenario.html) at landscape phone sizes using the installed Chrome.
 // Usage: npm run snapshot [-- <filter>]   e.g. `npm run snapshot -- bend` for just the bend scenarios
-import { mkdir } from 'node:fs/promises'
+import { mkdir, readdir } from 'node:fs/promises'
 import { withBrowser } from './browser.ts'
 
 const OUT_DIR = 'snapshots'
@@ -10,6 +10,7 @@ const SCENARIOS = [
   { name: 'hook-flying', query: 'ang=-1.2&secs=0.08' },
   { name: 'swing', query: 'ang=-1.1&reel=-120&secs=2' },
   { name: 'bend', query: 'ang=-0.9&reel=-120&secs=8&until=bend' },
+  ...(await levelIds()).map((id) => ({ name: `overview-${id}`, query: `level=${id}&overview` })),
 ]
 
 const VIEWPORTS = [
@@ -36,3 +37,9 @@ await withBrowser(async (browser, baseUrl) => {
     }
   }
 })
+
+/** Level ids from the level files' names, e.g. src/levels/1-2.ts → "1-2". */
+async function levelIds() {
+  const files = await readdir('src/levels')
+  return files.filter((f) => /^\d+-\d+\.ts$/.test(f)).map((f) => f.replace('.ts', ''))
+}

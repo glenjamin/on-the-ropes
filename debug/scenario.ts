@@ -1,7 +1,9 @@
 // Renders one frame of a scripted run so the game can be inspected in a known state.
 // Query params: ang (fire angle in radians, omit to stay put), reel (rope speed once attached; negative reels in),
-// secs (max seconds to simulate), until=bend (stop as soon as the rope bends round a corner).
+// secs (max seconds to simulate), until=bend (stop as soon as the rope bends round a corner),
+// level (id, default 1-2), overview (show the whole level instead of following the player).
 import { buildLevel } from '../src/level'
+import { LEVELS } from '../src/levels'
 import { cameraFocus, render, zoomFor } from '../src/render'
 import { Sim } from '../src/sim'
 
@@ -13,7 +15,9 @@ const reel = Number(params.get('reel') ?? 0)
 const secs = Number(params.get('secs') ?? 0)
 const untilBend = params.get('until') === 'bend'
 
-const level = buildLevel()
+const levelData = LEVELS.find((l) => l.id === (params.get('level') ?? '1-2'))
+if (!levelData) throw new Error(`unknown level ${params.get('level')}`)
+const level = buildLevel(levelData)
 const sim = new Sim(level)
 if (angle !== null) sim.fire({ x: Math.cos(Number(angle)), y: Math.sin(Number(angle)) })
 const trail: { p: { x: number; y: number }; t: number }[] = []
@@ -32,7 +36,8 @@ canvas.width = innerWidth * devicePixelRatio
 canvas.height = innerHeight * devicePixelRatio
 ctx.scale(devicePixelRatio, devicePixelRatio)
 const zoom = zoomFor(innerWidth, innerHeight)
-render(ctx, innerWidth, innerHeight, { pos: cameraFocus(sim.pos, innerHeight, zoom), zoom }, level, sim, { trail: trail.map((s) => s.p), tapRings: [] }, t)
+const cam = params.has('overview') ? overviewCamera() : { pos: cameraFocus(sim.pos, innerHeight, zoom), zoom }
+render(ctx, innerWidth, innerHeight, cam, level, sim, { trail: trail.map((s) => s.p), tapRings: [] }, t)
 
 document.body.dataset.summary = JSON.stringify({
   t: Number(t.toFixed(3)),
@@ -40,3 +45,13 @@ document.body.dataset.summary = JSON.stringify({
   bends: sim.rope ? sim.rope.anchors.length - 1 : null,
   hookFlying: sim.hook !== null,
 })
+
+/** Frames the playable span: start to goal across, top of the screen to just below the lava. */
+function overviewCamera() {
+  const left = level.start.x - 250
+  const right = level.goal.pos.x + 350
+  const top = -100
+  const bottom = level.lavaY + 80
+  const zoom = Math.min(innerWidth / (right - left), innerHeight / (bottom - top))
+  return { pos: { x: (left + right) / 2, y: (top + bottom) / 2 }, zoom }
+}

@@ -1,5 +1,6 @@
 import { add, dist, len, scale, sub, type Vec } from './geom'
-import { buildLevel } from './level'
+import { buildLevel, type Level } from './level'
+import { LEVELS, SETS } from './levels'
 import { cameraFocus, render, TAP_RING_SECS, zoomFor, type Camera } from './render'
 import { RADIUS, Sim } from './sim'
 
@@ -19,29 +20,40 @@ const SPEED_ZOOM_OUT = 0.13
 /** Speed (game units/s) at which the camera is fully zoomed out. */
 const SPEED_ZOOM_FULL = 700
 const RESPAWN_DELAY = 0.7
-const BEST_KEY = 'on-the-ropes:best'
+/** Best time per level id; a level counts as completed once it has one. */
+const PROGRESS_KEY = 'on-the-ropes:progress'
+const LAST_LEVEL_KEY = 'on-the-ropes:last-level'
 /** Matches the CSS that covers the game with a rotate prompt; play pauses while it shows. */
 const PORTRAIT_TOUCH = matchMedia('(orientation: portrait) and (pointer: coarse)')
 
-type Phase = 'play' | 'dead' | 'won'
+type Phase = 'play' | 'dead' | 'won' | 'menu'
 
 const canvas = el('game', HTMLCanvasElement)
 const ctx = canvas.getContext('2d')!
 const timeEl = el('time', HTMLElement)
 const bestEl = el('best', HTMLElement)
 const overlay = el('overlay', HTMLElement)
+const levelNameEl = el('level-name', HTMLElement)
 
-const level = buildLevel()
-const sim = new Sim(level)
+const progress = loadProgress()
+let levelIndex = 0
+let level: Level = buildLevel(LEVELS[0])
+let sim = new Sim(level)
 const cam: Camera = { pos: { ...level.start }, zoom: 1 }
 // Lets scripted browser checks (scripts/e2e.ts) read game state during development
-if (import.meta.env.DEV) window.game = { sim, cam }
+if (import.meta.env.DEV) {
+  window.game = {
+    get sim() {
+      return sim
+    },
+    cam,
+  }
+}
 
 let phase: Phase = 'play'
 let phaseTime = 0
 let runTime = 0
 let running = false
-let best = loadBest()
 let clock = 0
 let accumulator = 0
 
@@ -52,9 +64,8 @@ const tapRings: { at: Vec; t: number }[] = []
 let baseZoom = 1
 
 resize()
-cam.pos = cameraFocus(level.start, innerHeight, cam.zoom)
 addEventListener('resize', resize)
-showBest()
+loadLevel(initialLevelIndex())
 
 // Stops iOS treating presses as text selection (the magnifier) or double-tap zoom; pointer events still fire
 canvas.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false })
@@ -62,10 +73,6 @@ canvas.addEventListener('touchstart', (e) => e.preventDefault(), { passive: fals
 // Taps alternate: fire at the tapped point, then let go
 canvas.addEventListener('pointerdown', (e) => {
   enterFullscreen()
-  if (phase === 'won') {
-    if (phaseTime > 0.6) restart()
-    return
-  }
   if (phase !== 'play') return
   tapRings.push({ at: screenToWorld(e.clientX, e.clientY), t: performance.now() / 1000 })
   if (sim.rope || sim.hook) {
@@ -80,6 +87,18 @@ addEventListener('keydown', (e) => {
   if (e.key.toLowerCase() === 'r') restart()
 })
 el('restart', HTMLElement).addEventListener('click', restart)
+el('levels', HTMLElement).addEventListener('click', showMenu)
+// Buttons on the win screen and level menu say what they do with data attributes
+overlay.addEventListener('click', (e) => {
+  const button = e.target instanceof HTMLElement ? e.target.closest('button') : null
+  if (!button) return
+  const { action, level: index } = button.dataset
+  if (action === 'retry') restart()
+  else if (action === 'next') loadLevel(levelIndex + 1)
+  else if (action === 'menu') showMenu()
+  else if (action === 'back') resume()
+  else if (index !== undefined) loadLevel(Number(index))
+})
 
 requestAnimationFrame(frame)
 
@@ -137,13 +156,64 @@ function win() {
   phaseTime = 0
   running = false
   sim.release()
-  const isBest = best === null || runTime < best
+  const previous = progress[level.id]
+  const isBest = previous === undefined || runTime < previous
   if (isBest) {
-    best = runTime
-    saveBest(runTime)
+    progress[level.id] = runTime
+    writeStored(PROGRESS_KEY, JSON.stringify(progress))
     showBest()
   }
-  showOverlay(`<div><h1>${runTime.toFixed(2)}s</h1><p>${isBest ? 'New best!' : `Best ${best!.toFixed(2)}s`}</p><p>Tap to go again</p></div>`)
+  const hasNext = levelIndex + 1 < LEVELS.length
+  showOverlay(`<div>
+    <h1>${runTime.toFixed(2)}s</h1>
+    <p>${isBest ? 'New best!' : `Best ${progress[level.id].toFixed(2)}s`}</p>
+    <div class="actions">
+      <button class="btn" data-action="retry">Retry</button>
+      ${hasNext ? '<button class="btn primary" data-action="next">Next level</button>' : '<button class="btn primary" data-action="menu">Levels</button>'}
+    </div>
+  </div>`)
+}
+
+function loadLevel(index: number) {
+  levelIndex = index
+  level = buildLevel(LEVELS[index])
+  sim = new Sim(level)
+  writeStored(LAST_LEVEL_KEY, level.id)
+  levelNameEl.textContent = `${level.id}  ${level.name}`
+  showBest()
+  restart()
+}
+
+/** Lists levels grouped into their sets; a level unlocks once the one before it is completed. */
+function showMenu() {
+  if (phase === 'play') running = false
+  const resumable = phase === 'play'
+  phase = 'menu'
+  const rows = SETS.map((set) => {
+    const buttons = set.levels.map((l) => {
+      const i = LEVELS.indexOf(l)
+      const best = progress[l.id]
+      const locked = i > 0 && progress[LEVELS[i - 1].id] === undefined
+      return `<button class="level-btn" data-level="${i}" ${locked ? 'disabled' : ''}>
+        <strong>${l.id}</strong><span>${l.name}</span><small>${locked ? 'Locked' : best === undefined ? '—' : `${best.toFixed(2)}s`}</small>
+      </button>`
+    })
+    return `<h2>${set.name}</h2><div class="set">${buttons.join('')}</div>`
+  })
+  const back = resumable ? '<div class="actions"><button class="btn" data-action="back">Back</button></div>' : ''
+  showOverlay(`<div class="menu">${rows.join('')}${back}</div>`)
+}
+
+function resume() {
+  phase = 'play'
+  running = sim.rope !== null || runTime > 0
+  hideOverlay()
+}
+
+function initialLevelIndex(): number {
+  const wanted = new URLSearchParams(location.search).get('level') ?? readStored(LAST_LEVEL_KEY)
+  const index = LEVELS.findIndex((l) => l.id === wanted)
+  return index === -1 ? 0 : index
 }
 
 function restart() {
@@ -212,16 +282,18 @@ function hideOverlay() {
 }
 
 function showBest() {
-  bestEl.textContent = best === null ? '' : `Best ${best.toFixed(2)}`
+  const best = progress[level.id]
+  bestEl.textContent = best === undefined ? '' : `Best ${best.toFixed(2)}`
 }
 
-function loadBest(): number | null {
-  const v = parseFloat(readStored(BEST_KEY) ?? '')
-  return Number.isFinite(v) ? v : null
-}
-
-function saveBest(v: number) {
-  writeStored(BEST_KEY, String(v))
+function loadProgress(): Record<string, number> {
+  try {
+    const raw: unknown = JSON.parse(readStored(PROGRESS_KEY) ?? '{}')
+    if (typeof raw !== 'object' || raw === null) return {}
+    return Object.fromEntries(Object.entries(raw).filter((e): e is [string, number] => typeof e[1] === 'number'))
+  } catch {
+    return {}
+  }
 }
 
 function readStored(key: string): string | null {

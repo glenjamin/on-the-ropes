@@ -90,6 +90,28 @@ const CHECKS: [string, (page: Page) => Promise<void>, BrowserContextOptions?][] 
     },
   ],
   [
+    'a new player starts on 1-1; finishing it records a time and unlocks the next level',
+    async (page) => {
+      await page.evaluate(() => localStorage.clear())
+      await page.goto(page.url().split('?')[0])
+      await page.waitForFunction(() => window.game)
+      assert.match(await page.textContent('#level-name') ?? '', /^1-1/)
+      await page.click('#levels')
+      assert.ok(await page.isDisabled('.level-btn[data-level="1"]'), '1-2 should start locked')
+      await page.click('text=Back')
+
+      // Drop the player onto the goal rather than playing the level through
+      await page.evaluate(() => {
+        if (window.game) window.game.sim.pos = { x: 5750, y: 560 }
+      })
+      await page.click('text=Next level')
+      assert.match(await page.textContent('#level-name') ?? '', /^1-2/)
+      await page.click('#levels')
+      assert.ok(await page.isEnabled('.level-btn[data-level="1"]'), '1-2 should now be unlocked')
+      assert.match(await page.textContent('.level-btn[data-level="0"]') ?? '', /\d+\.\d\ds/)
+    },
+  ],
+  [
     'held in portrait, a phone shows the rotate prompt and taps do nothing',
     async (page) => {
       assert.ok(await page.isVisible('#rotate'), 'rotate prompt should show')
@@ -109,7 +131,8 @@ await withBrowser(async (browser, baseUrl) => {
   for (const [name, check, device] of CHECKS) {
     const context = await browser.newContext(device ?? LANDSCAPE)
     const page = await context.newPage()
-    await page.goto(baseUrl)
+    // Checks tap relative to the player, so any level with ceiling and floor near the start works
+    await page.goto(`${baseUrl}?level=1-2`)
     await page.waitForFunction(() => window.game)
     try {
       await check(page)

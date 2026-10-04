@@ -48,7 +48,9 @@
       }
       #time { font-size: 22px; font-weight: 700; }
       #best { font-size: 13px; opacity: 0.75; }
-      #restart {
+      #level-name { font-size: 13px; opacity: 0.75; margin-bottom: 2px; white-space: pre; }
+      .hud-buttons { display: flex; gap: 8px; }
+      .btn {
         pointer-events: auto;
         background: #ffffff1f;
         color: inherit;
@@ -70,6 +72,24 @@
       #overlay.show { display: grid; }
       #overlay h1 { margin: 0 0 8px; font-size: 40px; }
       #overlay p { margin: 4px 0; opacity: 0.85; }
+      #overlay button { pointer-events: auto; }
+      .btn.primary { background: #8cffb4; color: #120d1c; border-color: #8cffb4; font-weight: 600; }
+      .actions { display: flex; gap: 12px; justify-content: center; margin-top: 16px; }
+      .menu h2 { margin: 12px 0 8px; font-size: 15px; font-weight: 600; opacity: 0.7; }
+      .set { display: flex; gap: 10px; justify-content: center; }
+      .level-btn {
+        display: grid;
+        gap: 2px;
+        min-width: 130px;
+        padding: 10px 14px;
+        border-radius: 12px;
+        border: 1px solid #ffffff33;
+        background: #ffffff14;
+        color: inherit;
+        font: inherit;
+      }
+      .level-btn small { opacity: 0.7; font-variant-numeric: tabular-nums; }
+      .level-btn:disabled { opacity: 0.35; }
       #rotate {
         position: fixed;
         inset: 0;
@@ -90,10 +110,14 @@
     <canvas id="game"></canvas>
     <div id="hud">
       <div>
+        <div id="level-name"></div>
         <div id="time">0.00</div>
         <div id="best"></div>
       </div>
-      <button id="restart" type="button">Restart</button>
+      <div class="hud-buttons">
+        <button id="levels" class="btn" type="button">Levels</button>
+        <button id="restart" class="btn" type="button">Restart</button>
+      </div>
     </div>
     <div id="overlay"></div>
     <div id="rotate"><div class="icon">⟳</div><div>Turn your phone sideways to play</div></div>
