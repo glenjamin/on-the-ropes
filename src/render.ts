@@ -46,9 +46,10 @@ export function zoomFor(w: number, h: number): number {
   return Math.max(0.45, Math.min(1.4, Math.sqrt(w * h) / 850))
 }
 
-/** Where to centre the camera to follow `p`, keeping it below the middle so more of what's above is in view. */
+/** Where to centre the camera to follow `p`, keeping it low on screen so most of the view is what's above. */
 export function cameraFocus(p: Vec, viewH: number, zoom: number): Vec {
-  const raise = 0.25
+  // Fraction of the half-height to lift the view by: 0.5 puts the player three-quarters of the way down
+  const raise = 0.5
   return { x: p.x, y: p.y - (viewH / 2 / zoom) * raise }
 }
 
