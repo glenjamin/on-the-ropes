@@ -3,9 +3,10 @@ import type { LevelData } from '../level'
 export default {
   id: '1-2',
   name: 'Lava Cave',
+  theme: 'lava',
   start: [180, 430],
   goal: [6520, 620],
-  lavaY: 1200,
+  deathY: 1200,
   shapes: [
     // Walls at either end
     { rect: [-400, -800, 400, 2200] },

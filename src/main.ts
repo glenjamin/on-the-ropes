@@ -19,7 +19,12 @@ const TRAIL_SECS = 1.8
 const SPEED_ZOOM_OUT = 0.13
 /** Speed (game units/s) at which the camera is fully zoomed out. */
 const SPEED_ZOOM_FULL = 700
-const RESPAWN_DELAY = 0.7
+/** After dying, the death plays out before its overlay appears, then the level restarts. */
+const DEATH_CARD_DELAY = 1
+const RESPAWN_DELAY = 2
+const PLUMMET_GRAVITY = 4000
+/** Pause after striking the gong before the result card appears, so the impact is seen. */
+const WIN_CARD_DELAY = 1
 /** Best time per level id; a level counts as completed once it has one. */
 const PROGRESS_KEY = 'on-the-ropes:progress'
 const LAST_LEVEL_KEY = 'on-the-ropes:last-level'
@@ -55,6 +60,10 @@ let phaseTime = 0
 let runTime = 0
 let running = false
 let clock = 0
+/** The result card, waiting to be shown once the gong has had its moment. */
+let pendingWinCard: string | null = null
+/** Where the player fell into lava, for the splash and sinking animation. */
+let lavaDeathAt: Vec | null = null
 let accumulator = 0
 
 /** Recent player positions, oldest first, for the motion trail. */
@@ -109,27 +118,40 @@ function frame(now: number) {
   phaseTime += dt
 
   if (phase === 'play' && !PORTRAIT_TOUCH.matches) update(dt)
-  else if (phase === 'dead' && phaseTime > RESPAWN_DELAY) respawn()
+  else if (phase === 'won') {
+    stepSim(dt)
+    if (pendingWinCard && phaseTime > WIN_CARD_DELAY) {
+      showOverlay(pendingWinCard, { dim: false })
+      pendingWinCard = null
+    }
+  } else if (phase === 'dead') {
+    // Falling into lava stops where it lands; falling out of the sky plummets away into the fog
+    if (level.theme !== 'lava') plummet(dt)
+    if (phaseTime > DEATH_CARD_DELAY && !overlay.classList.contains('show')) {
+      showOverlay(level.theme === 'lava' ? '<h1>Toasted</h1>' : '<h1>Lost in the clouds</h1>')
+    }
+    if (phaseTime > RESPAWN_DELAY) respawn()
+  }
 
   followCamera(dt)
   trail.push({ p: { ...sim.pos }, t })
   while (trail.length && t - trail[0].t > TRAIL_SECS) trail.shift()
   while (tapRings.length && t - tapRings[0].t > TAP_RING_SECS) tapRings.shift()
-  const fx = { trail: trail.map((s) => s.p), tapRings: tapRings.map((r) => ({ at: r.at, age: t - r.t })) }
+  const fx = {
+    trail: trail.map((s) => s.p),
+    tapRings: tapRings.map((r) => ({ at: r.at, age: t - r.t })),
+    lavaDeath: lavaDeathAt ? { at: lavaDeathAt, age: phaseTime } : undefined,
+  }
   render(ctx, canvas.width / devicePixelRatio, canvas.height / devicePixelRatio, cam, level, sim, fx, t)
   timeEl.textContent = runTime.toFixed(2)
   requestAnimationFrame(frame)
 }
 
 function update(dt: number) {
-  accumulator += dt * TIME_SCALE
-  while (accumulator >= SUBSTEP) {
-    sim.step(SUBSTEP, -autoReelSpeed(sim.rope?.age ?? 0))
-    accumulator -= SUBSTEP
-  }
+  stepSim(dt)
   if (running) runTime += dt
 
-  if (sim.pos.y + RADIUS > level.lavaY) die()
+  if (sim.pos.y + RADIUS > level.deathY) die()
   else if (dist(sim.pos, level.goal.pos) < level.goal.radius + RADIUS) win()
 }
 
@@ -137,11 +159,13 @@ function die() {
   phase = 'dead'
   phaseTime = 0
   sim.release()
-  showOverlay('<h1>Toasted</h1>')
+  if (level.theme === 'lava') lavaDeathAt = { x: sim.pos.x, y: level.deathY - RADIUS }
 }
 
 function respawn() {
   sim.reset()
+  pendingWinCard = null
+  lavaDeathAt = null
   trail.length = 0
   phase = 'play'
   phaseTime = 0
@@ -155,7 +179,7 @@ function win() {
   phase = 'won'
   phaseTime = 0
   running = false
-  sim.release()
+  sim.catchOnGong()
   const previous = progress[level.id]
   const isBest = previous === undefined || runTime < previous
   if (isBest) {
@@ -164,14 +188,14 @@ function win() {
     showBest()
   }
   const hasNext = levelIndex + 1 < LEVELS.length
-  showOverlay(`<div>
+  pendingWinCard = `<div>
     <h1>${runTime.toFixed(2)}s</h1>
     <p>${isBest ? 'New best!' : `Best ${progress[level.id].toFixed(2)}s`}</p>
     <div class="actions">
       <button class="btn" data-action="retry">Retry</button>
       ${hasNext ? '<button class="btn primary" data-action="next">Next level</button>' : '<button class="btn primary" data-action="menu">Levels</button>'}
     </div>
-  </div>`)
+  </div>`
 }
 
 function loadLevel(index: number) {
@@ -229,7 +253,7 @@ function followCamera(dt: number) {
   const viewH = canvas.height / devicePixelRatio
   const target = cameraFocus(add(sim.pos, leadLen > 220 ? scale(lead, 220 / leadLen) : lead), viewH, cam.zoom)
   const halfH = viewH / 2 / cam.zoom
-  target.y = Math.min(target.y, level.lavaY + 120 - halfH)
+  target.y = Math.min(target.y, level.deathY + 120 - halfH)
   const k = 1 - Math.exp(-5 * dt)
   cam.pos = add(cam.pos, scale(sub(target, cam.pos), k))
 }
@@ -272,8 +296,24 @@ function screenToWorld(x: number, y: number): Vec {
   }
 }
 
-function showOverlay(html: string) {
+/** After falling out of the sky: drop ever faster, past the speed limit and through anything below. */
+function plummet(dt: number) {
+  sim.vel.y += PLUMMET_GRAVITY * dt * TIME_SCALE
+  sim.pos = add(sim.pos, scale(sim.vel, dt * TIME_SCALE))
+}
+
+function stepSim(dt: number) {
+  accumulator += dt * TIME_SCALE
+  while (accumulator >= SUBSTEP) {
+    sim.step(SUBSTEP, -autoReelSpeed(sim.rope?.age ?? 0))
+    accumulator -= SUBSTEP
+  }
+}
+
+/** Covers the game with a message; `dim: false` leaves the game visible around a card instead. */
+function showOverlay(html: string, { dim = true } = {}) {
   overlay.innerHTML = html
+  overlay.classList.toggle('clear', !dim)
   overlay.classList.add('show')
 }
 

@@ -13,7 +13,8 @@ import {
   sub,
   type Vec,
 } from './geom'
-import type { Level } from './level'
+import { gongCentre, restingGong, swingGong, type Gong } from './gong'
+import { gustStrength, type Level } from './level'
 
 export const RADIUS = 12
 export const HOOK_RANGE = 1000
@@ -31,6 +32,12 @@ const GROUND_FRICTION = 0.3
 const ANCHOR_OFFSET = 1.5
 /** Fraction of critical damping on the rope's stretch, so bungee bounces die away. */
 const ROPE_DAMPING = 0.15
+/** Once the gong is struck the player is held near it by a short, stiff, invisible bungee. */
+const GONG_TETHER_SLACK = 25
+const GONG_TETHER_STIFFNESS = 200
+const GONG_BOUNCE = 0.7
+/** How much of the player's impact speed goes into swinging the gong. */
+const GONG_KICK = 0.004
 
 /** A point the rope passes through; `side` records which way it bent so it can unbend. */
 type Anchor = { p: Vec; side: number }
@@ -51,12 +58,18 @@ export class Sim {
   startLength = 0.3
   /** Downward acceleration, units/s². */
   gravity = 2000
+  /** Seconds simulated since the level started, which times gusts that blow in bursts. */
+  time = 0
+  /** Set once the player reaches the goal: they bounce off the gong and stay caught around it. */
+  gong: Gong | null = null
 
   constructor(private level: Level) {
     this.pos = { ...level.start }
   }
 
   reset() {
+    this.time = 0
+    this.gong = null
     this.pos = { ...this.level.start }
     this.vel = { x: 0, y: 0 }
     this.rope = null
@@ -73,12 +86,20 @@ export class Sim {
     this.hook = null
   }
 
+  /** Strike the goal gong: lets go of the rope, and from now on the player bounces off the gong and stays near it. */
+  catchOnGong() {
+    this.release()
+    this.gong = restingGong(this.level.goal.pos, this.level.goal.radius)
+  }
+
   /** Advances by dt while reeling the rope out (positive speed) or in (negative). */
   step(dt: number, reelSpeed: number) {
     const prev = this.pos
+    this.time += dt
     if (this.rope) this.rope.age += dt
     this.reel(reelSpeed * dt)
     this.vel.y += this.gravity * dt
+    this.blowInGusts(dt)
     this.pullOnRope(dt)
     const speed = len(this.vel)
     if (speed > MAX_SPEED) this.vel = scale(this.vel, MAX_SPEED / speed)
@@ -90,6 +111,31 @@ export class Sim {
       this.updateWraps(firedFrom ?? prev)
     }
     this.collide(dt)
+    if (this.gong) this.bounceOffGong(this.gong, dt)
+  }
+
+  private bounceOffGong(gong: Gong, dt: number) {
+    swingGong(gong, dt)
+    const centre = gongCentre(gong)
+    const away = sub(this.pos, centre)
+    const l = len(away)
+    const touching = gong.radius + RADIUS
+    if (l < touching && l > 1e-6) {
+      const n = scale(away, 1 / l)
+      this.pos = add(centre, scale(n, touching))
+      const vn = dot(this.vel, n)
+      if (vn < 0) {
+        this.vel = sub(this.vel, scale(n, vn * (1 + GONG_BOUNCE)))
+        gong.swingVel += n.x * vn * GONG_KICK
+        if (vn < -80) gong.hits.push(this.time)
+      }
+    }
+    const stretch = l - (touching + GONG_TETHER_SLACK)
+    if (stretch > 0) {
+      const n = scale(away, -1 / l)
+      const damping = 2 * ROPE_DAMPING * Math.sqrt(GONG_TETHER_STIFFNESS) * dot(this.vel, n)
+      this.vel = add(this.vel, scale(n, Math.max(0, GONG_TETHER_STIFFNESS * stretch - damping) * dt))
+    }
   }
 
   /** Changes the rope's rest length; reeling in a taut rope stretches it, and the stretch pulls the player in. */
@@ -97,6 +143,14 @@ export class Sim {
     const rope = this.rope
     if (!rope || delta === 0) return
     rope.length = Math.max(ROPE_MIN_LENGTH, Math.min(HOOK_RANGE, rope.length + delta))
+  }
+
+  private blowInGusts(dt: number) {
+    for (const gust of this.level.gusts) {
+      const { min, max } = gust
+      if (this.pos.x < min.x || this.pos.x > max.x || this.pos.y < min.y || this.pos.y > max.y) continue
+      this.vel = add(this.vel, scale(gust.force, gustStrength(gust, this.time) * dt))
+    }
   }
 
   /** The rope is a bungee: slack when shorter than its rest length, pulling back in proportion to any stretch. */

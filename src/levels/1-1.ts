@@ -3,9 +3,10 @@ import type { LevelData } from '../level'
 export default {
   id: '1-1',
   name: 'First Swing',
+  theme: 'lava',
   start: [180, 430],
   goal: [5750, 580],
-  lavaY: 1250,
+  deathY: 1250,
   shapes: [
     // Walls at either end
     { rect: [-400, -800, 400, 2300] },

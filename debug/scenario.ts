@@ -51,7 +51,7 @@ function overviewCamera() {
   const left = level.start.x - 250
   const right = level.goal.pos.x + 350
   const top = -100
-  const bottom = level.lavaY + 80
+  const bottom = level.deathY + 80
   const zoom = Math.min(innerWidth / (right - left), innerHeight / (bottom - top))
   return { pos: { x: (left + right) / 2, y: (top + bottom) / 2 }, zoom }
 }

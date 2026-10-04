@@ -6,9 +6,10 @@ const stalagmite = (x: number, tipY: number): [number, number][] => [[x - 70, 14
 export default {
   id: '1-4',
   name: 'Fangs',
+  theme: 'lava',
   start: [150, 430],
   goal: [7400, 580],
-  lavaY: 1200,
+  deathY: 1200,
   shapes: [
     // Walls at either end
     { rect: [-400, -800, 400, 2200] },

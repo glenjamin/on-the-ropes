@@ -3,9 +3,10 @@ import type { LevelData } from '../level'
 export default {
   id: '1-3',
   name: 'Stepping Stones',
+  theme: 'lava',
   start: [140, 430],
   goal: [7200, 580],
-  lavaY: 1150,
+  deathY: 1150,
   shapes: [
     // Walls at either end
     { rect: [-400, -800, 400, 2200] },

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { dist, pointInPolygon, segmentHit, type Vec } from './geom'
-import { buildLevel, type Level } from './level'
+import { gongCentre } from './gong'
+import { buildLevel, type Level, type LevelData } from './level'
 import lavaCave from './levels/1-2'
 import { Sim } from './sim'
 
@@ -112,6 +113,52 @@ describe('swinging on the rope', () => {
     expect(sim.vel.x).toBeGreaterThan(200)
   })
 
+  it('gusts push the player while inside them, and bursting gusts only while on', () => {
+    const open: LevelData = { id: 't', name: 't', theme: 'clouds', start: [0, 0], goal: [9000, 0], deathY: 1e6, shapes: [] }
+    // No gravity, so the speed limit doesn't mix falling into the sideways push
+    const steady = new Sim(buildLevel({ ...open, gusts: [{ rect: [-500, -1e6, 1000, 2e6], force: [1000, 0] }] }))
+    steady.gravity = 0
+    run(steady, 0.5, 0)
+    expect(steady.vel.x).toBeCloseTo(500, -1)
+    run(steady, 1, 0)
+    const leftTheGust = steady.vel.x
+    run(steady, 0.5, 0)
+    expect(steady.pos.x).toBeGreaterThan(500)
+    expect(steady.vel.x).toBe(leftTheGust)
+
+    const bursts = new Sim(buildLevel({ ...open, gusts: [{ rect: [-1e6, -1e6, 2e6, 2e6], force: [500, 0], cycle: { period: 2, on: 1 } }] }))
+    bursts.gravity = 0
+    run(bursts, 1, 0)
+    const afterBurst = bursts.vel.x
+    expect(afterBurst).toBeCloseTo(500, -1)
+    run(bursts, 0.9, 0)
+    expect(bursts.vel.x).toBe(afterBurst)
+  })
+
+  it('striking the gong bounces the player off it, swings it, and keeps them caught nearby', () => {
+    const level = buildLevel(lavaCave)
+    const sim = new Sim(level)
+    sim.pos = { x: level.goal.pos.x - 70, y: level.goal.pos.y }
+    sim.vel = { x: 850, y: 0 }
+    while (dist(sim.pos, level.goal.pos) > level.goal.radius + 12) sim.step(DT, 0)
+    sim.catchOnGong()
+
+    let furthest = 0
+    let bouncedBack = false
+    let biggestSwing = 0
+    for (let t = 0; t < 4; t += DT) {
+      sim.step(DT, 0)
+      const gong = sim.gong!
+      if (sim.vel.x < -100) bouncedBack = true
+      biggestSwing = Math.max(biggestSwing, gong.swing)
+      furthest = Math.max(furthest, dist(sim.pos, gongCentre(gong)))
+    }
+    expect(bouncedBack).toBe(true)
+    expect(biggestSwing).toBeGreaterThan(0.05)
+    expect(sim.gong!.hits.length).toBeGreaterThan(0)
+    expect(furthest).toBeLessThan(level.goal.radius + 12 + 25 + 50)
+  })
+
   it('never lets the player or the rope pass through terrain during random play', () => {
     const stats = randomPlay(400)
     expect(stats.attaches).toBeGreaterThan(200)
@@ -162,7 +209,7 @@ function randomPlay(attempts: number) {
         if (points.some((p, i) => i > 0 && crossesTerrain(level, points[i - 1], p))) stats.stepsRopeThroughTerrain++
       }
       if (level.polys.some((poly) => pointInPolygon(sim.pos, poly.pts))) stats.stepsInsideTerrain++
-      if (sim.pos.y > level.lavaY) {
+      if (sim.pos.y > level.deathY) {
         sim.reset()
         break
       }

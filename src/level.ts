@@ -11,35 +11,62 @@ export type Poly = {
 /** Terrain pieces as plain data: an axis-aligned box, a square turned on its corner, or any polygon. */
 export type Shape = { rect: [x: number, y: number, w: number, h: number] } | { diamond: [cx: number, cy: number, r: number] } | { path: [number, number][] }
 
+export type Theme = 'lava' | 'clouds'
+
+/**
+ * A region of wind that pushes the player while they're inside it, with `force` as an acceleration in units/s².
+ * With `cycle` it blows in bursts: on for `on` seconds out of every `period`, starting `offset` seconds in.
+ */
+export type GustData = {
+  rect: [x: number, y: number, w: number, h: number]
+  force: [x: number, y: number]
+  cycle?: { period: number; on: number; offset?: number }
+}
+
 /** A level as authored: an id like "1-2" (set, then position in the set), terrain, and where the run starts and ends. */
 export type LevelData = {
   id: string
   name: string
+  theme: Theme
   start: [number, number]
   goal: [number, number]
-  lavaY: number
+  /** Falling below this ends the run: into lava, or out of the sky. */
+  deathY: number
   shapes: Shape[]
+  gusts?: GustData[]
 }
+
+export type Gust = { min: Vec; max: Vec; force: Vec; cycle?: { period: number; on: number; offset: number } }
 
 export type Level = {
   id: string
   name: string
+  theme: Theme
   polys: Poly[]
+  gusts: Gust[]
   start: Vec
   goal: { pos: Vec; radius: number }
-  lavaY: number
+  deathY: number
 }
 
-const GOAL_RADIUS = 40
+/** The goal gong's disc radius. */
+const GOAL_RADIUS = 36
 
 export function buildLevel(data: LevelData): Level {
   return {
     id: data.id,
     name: data.name,
+    theme: data.theme,
     polys: data.shapes.map((s) => makePoly(shapePoints(s))),
+    gusts: (data.gusts ?? []).map(({ rect: [x, y, w, h], force, cycle }) => ({
+      min: vec(x, y),
+      max: vec(x + w, y + h),
+      force: vec(...force),
+      cycle: cycle && { ...cycle, offset: cycle.offset ?? 0 },
+    })),
     start: vec(...data.start),
     goal: { pos: vec(...data.goal), radius: GOAL_RADIUS },
-    lavaY: data.lavaY,
+    deathY: data.deathY,
   }
 }
 
@@ -75,4 +102,12 @@ function shapePoints(shape: Shape): Vec[] {
     return [vec(cx, cy - r), vec(cx + r, cy), vec(cx, cy + r), vec(cx - r, cy)]
   }
   return shape.path.map(([x, y]) => vec(x, y))
+}
+
+/** How hard a gust is blowing at `time`: 1 while on, 0 while off. */
+export function gustStrength(gust: Gust, time: number): number {
+  if (!gust.cycle) return 1
+  const { period, on, offset } = gust.cycle
+  const t = (((time - offset) % period) + period) % period
+  return t < on ? 1 : 0
 }

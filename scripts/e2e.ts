@@ -131,11 +131,14 @@ await withBrowser(async (browser, baseUrl) => {
   for (const [name, check, device] of CHECKS) {
     const context = await browser.newContext(device ?? LANDSCAPE)
     const page = await context.newPage()
+    const pageErrors: string[] = []
+    page.on('pageerror', (e) => pageErrors.push(e.message))
     // Checks tap relative to the player, so any level with ceiling and floor near the start works
     await page.goto(`${baseUrl}?level=1-2`)
     await page.waitForFunction(() => window.game)
     try {
       await check(page)
+      assert.deepEqual(pageErrors, [], 'the page should not throw')
       console.log(`✓ ${name}`)
     } catch (e) {
       failures++
