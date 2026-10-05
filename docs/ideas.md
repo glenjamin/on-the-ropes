@@ -7,10 +7,13 @@
 - At launch speeds the camera trails the player by several hundred units, since it follows with a fixed lag; it may need to catch up faster during a launch
 - The bot treats ice and dark ice like rock when picking targets and finds out by simulating; a person can see the colours, so it may undervalue or waste taps on them
 - Only the piece the rope first caught decides the grip; a rope wrapped round an ice corner still holds as the first surface does
+- Jungle (set 4) is unplayed apart from an early look at the vines, which were calmed down after feeling too springy. Things to try: how heavy a vine swing feels (`VINE_MASS`, `VINE_DAMPING`, `VINE_ROPE_STIFFNESS`, `VINE_ROPE_DAMPING`, `VINE_START_LENGTH` in `src/sim.ts`), how hard a green vine flings you (`VINE_PUMP`, `VINE_MAX_SPEED`), and how long a brown vine holds (`VINE_SNAP_SECS`). The green-only gaps (4-1, 4-2, both in 4-5) were checked by turning that vine brown and seeing the bot fail, so retuning the green fling means re-checking them
+- A rope caught on a vine keeps its wraps round terrain corners, but only the segment to the player wraps; a vine swinging its first segment through terrain doesn't bend it. Levels keep vines in open air so it doesn't show
+- The bot sees vines and aims where they hang at that moment, but like ice it can't tell green from brown except by simulating
 
 ## Ideas for later sets
 
-- A jungle set: swing from tree branches and leafy canopy clumps, with tree trunks drawn behind everything that you don't collide with (a background decoration layer in the level format, which could also add hills behind the lava or distant clouds). Green canopy palette with dappled light; falling ends in undergrowth or a river. Mechanic options: swaying vines that carry you with them, springy leaves that launch you, thorny branches the rope slides off, or branches that snap a second or two after you grab them. Start with one level for the look, then pick the mechanic
+- Other jungle mechanics we didn't build: springy leaves that launch you, thorny branches the rope slides off. Trunks are a background layer in the level format that other sets could use for hills behind the lava or distant clouds
 - Crumbling rocks that break a second or two after being grabbed
 - Lava vents or bouncy pads for launches
 - Hazard surfaces that kill on touch away from the lava

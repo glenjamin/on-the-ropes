@@ -222,6 +222,68 @@ describe('swinging on the rope', () => {
     expect(launched.afterGrab).toBeLessThanOrEqual(900 + 1e-6)
   })
 
+  it('grabbing a hanging vine sets it swinging, and the rope moves with it', () => {
+    const sim = new Sim(buildLevel({ ...flat, start: [-300, 0], vines: [{ pivot: [0, -600], length: 500, kind: 'green' }] }))
+    sim.fire({ x: 300, y: -150 })
+    while (!sim.rope) sim.step(DT, 0)
+    const caughtAt = { ...sim.rope!.anchors[0].p }
+    expect(sim.vines[0].angle).toBeCloseTo(0, 2)
+
+    run(sim, 0.5, -200)
+    expect(Math.abs(sim.vines[0].angle)).toBeGreaterThan(0.1)
+    expect(dist(sim.rope!.anchors[0].p, caughtAt)).toBeGreaterThan(30)
+  })
+
+  it('a green vine flings the player further than a fixed anchor at the same spot, and faster than the usual limit', () => {
+    // Flying in at speed, catch the vine (or a knob where the vine would be caught), then let go at the best moment
+    const furthest = (anchor: Pick<LevelData, 'shapes' | 'vines'>) => {
+      let best = { reach: -Infinity, fastest: 0 }
+      for (let hold = 0.2; hold < 2.5; hold += 0.05) {
+        const sim = new Sim(buildLevel({ ...flat, start: [-450, 250], ...anchor }))
+        sim.vel = { x: 850, y: -300 }
+        sim.fire({ x: 450, y: -200 })
+        let fastest = 0
+        for (let t = 0; t < hold; t += DT) {
+          sim.step(DT, -200)
+          fastest = Math.max(fastest, Math.hypot(sim.vel.x, sim.vel.y))
+        }
+        sim.release()
+        while (sim.pos.y < 500) sim.step(DT, 0)
+        if (sim.pos.x > best.reach) best = { reach: sim.pos.x, fastest }
+      }
+      return best
+    }
+    const vine = furthest({ shapes: [], vines: [{ pivot: [0, -500], length: 600, kind: 'green' }] })
+    const fixed = furthest({ shapes: [{ diamond: [0, -15, 15] }] })
+    expect(vine.reach).toBeGreaterThan(fixed.reach + 300)
+    expect(vine.fastest).toBeGreaterThan(1000)
+    expect(fixed.fastest).toBeLessThanOrEqual(900 + 1e-6)
+  })
+
+  it('a brown vine snaps about a second after it’s grabbed, and can’t be grabbed again until the run restarts', () => {
+    const sim = new Sim(buildLevel({ ...flat, start: [-200, 200], vines: [{ pivot: [0, -400], length: 500, kind: 'brown' }] }))
+    sim.gravity = 0
+    sim.fire({ x: 1, y: -1 })
+    run(sim, 0.8, -200)
+    expect(sim.rope).not.toBeNull()
+    run(sim, 0.4, -200)
+    expect(sim.rope).toBeNull()
+    expect(sim.vines[0].snapped).toBeGreaterThan(0.9)
+    expect(sim.vines[0].snapped).toBeLessThan(1.2)
+
+    sim.pos = { x: -200, y: 200 }
+    sim.vel = { x: 0, y: 0 }
+    sim.fire({ x: 1, y: -1 })
+    run(sim, 0.3, -200)
+    expect(sim.rope).toBeNull()
+
+    sim.reset()
+    sim.gravity = 0
+    sim.fire({ x: 1, y: -1 })
+    run(sim, 0.1, -200)
+    expect(sim.rope).not.toBeNull()
+  })
+
   it('striking the gong bounces the player off it once, swings it, and keeps them caught on a short cord', () => {
     const level = buildLevel(lavaCave)
     const sim = new Sim(level)

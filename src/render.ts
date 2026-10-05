@@ -29,7 +29,7 @@ const VINE_LOOKS: Record<VineKind, { stem: string; leaf: string }> = {
   green: { stem: '#3f9a2f', leaf: '#74d24e' },
   brown: { stem: '#7a5230', leaf: '#b08040' },
 }
-/** How long a snapped vine is drawn falling away, and the burst of leaves where it tore free. */
+/** How long a snapped vine is drawn falling away, and the burst of leaves where it snapped. */
 const VINE_FALL_SECS = 1.5
 const VINE_SNAP_BURST_SECS = 0.7
 const ICE_LOOKS: Record<Surface, { fill: string; stroke: string; sheen: string } | null> = {
@@ -142,10 +142,10 @@ export function render(ctx: CanvasRenderingContext2D, w: number, h: number, cam:
   drawGong(ctx, level, sim)
   drawVines(ctx, level, sim)
   drawTerrain(ctx, level, sim, palette)
-  drawVineSnaps(ctx, level, sim)
   for (const flag of level.flags) drawFlag(ctx, flag, time)
   drawRope(ctx, sim, palette)
-  drawIcePuff(ctx, sim)
+  if (level.theme === 'jungle') drawVineSnap(ctx, sim)
+  else drawIcePuff(ctx, sim)
   drawTrail(ctx, fx.trail, palette)
   if (fx.sinking) drawSinkingPlayer(ctx, fx.sinking, level.theme, time)
   else drawPlayer(ctx, sim.pos, sim.vel, time)
@@ -849,30 +849,26 @@ function drawVine(ctx: CanvasRenderingContext2D, vine: Vine, angle: number, stra
   }
 }
 
-/** Leaves and splinters bursting from the branch where a brown vine tore free. */
-function drawVineSnaps(ctx: CanvasRenderingContext2D, level: Level, sim: Sim) {
-  level.vines.forEach((vine, i) => {
-    const { snapped } = sim.vines[i]
-    if (snapped === null) return
-    const age = sim.time - snapped
-    if (age > VINE_SNAP_BURST_SECS) return
-    const k = age / VINE_SNAP_BURST_SECS
-    for (let j = 0; j < 12; j++) {
-      const angle = Math.PI * (0.15 + 0.7 * hash(j * 3.1 + i)) + (j % 2 ? 0 : Math.PI)
-      const speed = 100 + hash(j * 5.7 + i) * 200
-      const x = vine.pivot.x + Math.cos(angle) * speed * age
-      const y = vine.pivot.y + Math.sin(angle) * speed * age + 0.5 * 700 * age * age
-      ctx.save()
-      ctx.translate(x, y)
-      ctx.rotate(angle + age * 9)
-      ctx.globalAlpha = 1 - k
-      ctx.fillStyle = j % 3 ? VINE_LOOKS.brown.leaf : '#e8d2a0'
-      ctx.beginPath()
-      ctx.ellipse(0, 0, j % 3 ? 3 : 1.5, j % 3 ? 6 : 7, 0, 0, Math.PI * 2)
-      ctx.fill()
-      ctx.restore()
-    }
-  })
+/** Leaves and splinters bursting from where a brown vine snapped under the rope. */
+function drawVineSnap(ctx: CanvasRenderingContext2D, sim: Sim) {
+  if (!sim.slip) return
+  const age = sim.time - sim.slip.time
+  if (age > VINE_SNAP_BURST_SECS) return
+  const k = age / VINE_SNAP_BURST_SECS
+  const { at } = sim.slip
+  for (let j = 0; j < 14; j++) {
+    const angle = hash(j * 3.1 + 0.5) * Math.PI * 2
+    const speed = 100 + hash(j * 5.7) * 220
+    ctx.save()
+    ctx.translate(at.x + Math.cos(angle) * speed * age, at.y + Math.sin(angle) * speed * age + 0.5 * 700 * age * age)
+    ctx.rotate(angle + age * 9)
+    ctx.globalAlpha = 1 - k
+    ctx.fillStyle = j % 3 ? VINE_LOOKS.brown.leaf : '#e8d2a0'
+    ctx.beginPath()
+    ctx.ellipse(0, 0, j % 3 ? 3 : 1.5, j % 3 ? 6 : 7, 0, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.restore()
+  }
 }
 
 /** A tree trunk from its top down past the river, with bark lines; purely background. */

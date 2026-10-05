@@ -97,7 +97,7 @@ export class Sim {
   time = 0
   /** Set once the player reaches the goal: they bounce off the gong and stay caught around it. */
   gong: Gong | null = null
-  /** Where and when the rope last slipped off ice, for the puff of ice it leaves. */
+  /** Where and when the rope last slipped off ice or snapped a vine, for the puff of ice or leaves it leaves. */
   slip: { at: Vec; time: number } | null = null
   /** Pieces of dark ice that broke off when the rope slipped from them, by index, and when; they're gone until reset. */
   broken: { poly: number; time: number }[] = []
@@ -206,12 +206,9 @@ export class Sim {
     if (rope?.grip == null || rope.age < rope.grip) return
     const { caught } = rope
     this.rope = null
-    if ('vine' in caught) {
-      this.vines[caught.vine].snapped = this.time
-      return
-    }
     this.slip = { at: { ...rope.anchors[0].p }, time: this.time }
-    if (this.level.polys[caught.poly].surface === 'dark-ice') this.broken.push({ poly: caught.poly, time: this.time })
+    if ('vine' in caught) this.vines[caught.vine].snapped = this.time
+    else if (this.level.polys[caught.poly].surface === 'dark-ice') this.broken.push({ poly: caught.poly, time: this.time })
   }
 
   /** Changes the rope's rest length; reeling in a taut rope stretches it, and the stretch pulls the player in. */
