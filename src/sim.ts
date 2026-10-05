@@ -15,7 +15,7 @@ import {
   type Vec,
 } from './geom'
 import { gongCentre, restingGong, swingGong, type Gong } from './gong'
-import { gustStrength, type Level, type Poly, type Surface, type Vine } from './level'
+import { gustStrength, type Flipper, type Level, type Poly, type Surface, type Vine } from './level'
 
 export const RADIUS = 12
 export const HOOK_RANGE = 700
@@ -67,6 +67,29 @@ const VINE_SNAP_SECS = 0.5
 const VINE_PUMP = 700
 /** The speed limit while on a green vine and in the flight after letting go, until the next catch or touching terrain. */
 const VINE_MAX_SPEED = 1400
+/** A bumper sends the player back out as fast as they hit it, plus this much (units/s). */
+const BUMPER_KICK = 450
+/** The speed limit after a bumper or flipper strikes the player, until the next catch or touching terrain. */
+const KICK_MAX_SPEED = 1400
+/** Seconds a flipper takes to flip up, how long it stays up, and how long it takes to drop back. */
+const FLIP_UP_SECS = 0.08
+const FLIP_HOLD_SECS = 0.25
+const FLIP_DOWN_SECS = 0.25
+/** How close the player comes to a flipper's face, beyond touching it, before it flips. */
+const FLIPPER_REACH = 40
+/** Half a flipper paddle's thickness. */
+export const FLIPPER_RADIUS = 10
+/** A flipper's own bounce, on top of the speed its paddle is moving at. */
+const FLIPPER_BOUNCE = 0.4
+/** Seconds a launcher holds the player before firing, and after firing before it can catch them again. */
+export const LAUNCHER_HOLD_SECS = 0.5
+const LAUNCHER_REARM_SECS = 0.5
+/** How near a launcher's resting point the player must come to be caught. */
+const LAUNCHER_CATCH = 36
+
+/** What has lifted the speed limit, until the next rope catches or the player touches terrain. */
+type Boost = 'ramp' | 'vine' | 'kick' | 'launcher'
+const BOOST_MAX_SPEED: Record<Boost, number> = { ramp: LAUNCH_MAX_SPEED, launcher: LAUNCH_MAX_SPEED, vine: VINE_MAX_SPEED, kick: KICK_MAX_SPEED }
 
 /** A point the rope passes through; `side` records which way it bent so it can unbend. */
 type Anchor = { p: Vec; side: number }
@@ -80,6 +103,8 @@ export type Caught = { poly: number } | { vine: number; along: number }
 /** A vine's swing: `angle` from straight down (radians, positive towards +x), `spin` its rate, and when it snapped. */
 export type VineState = { angle: number; spin: number; snapped: number | null }
 export type Hook = { origin: Vec; pos: Vec; dir: Vec; travelled: number }
+/** The player caught in a launcher's cup at `caught`; `fired` once it has thrown them out. */
+export type Launch = { launcher: number; caught: number; fired: boolean }
 
 export class Sim {
   pos: Vec
@@ -101,23 +126,30 @@ export class Sim {
   slip: { at: Vec; time: number } | null = null
   /** Pieces of dark ice that broke off when the rope slipped from them, by index, and when; they're gone until reset. */
   broken: { poly: number; time: number }[] = []
-  /** Set by sliding on a launch ramp, which lifts the speed limit for the flight that follows. */
-  launched = false
-  /** Set by catching a green vine, which lifts the speed limit for the swing and the flight after it. */
-  flung = false
+  /**
+   * Set by sliding on a launch ramp, catching a green vine, being struck by a bumper or flipper, or being fired from a
+   * launcher, each of which lifts the speed limit for the flight that follows.
+   */
+  boost: Boost | null = null
   /** Each of the level's vines, in order. */
   vines: VineState[]
+  /** When each of the level's flippers last flipped, or null if it hasn't. */
+  flips: (number | null)[]
+  /** The last time each bumper that has been hit kicked the player, by terrain index, for its flash. */
+  bumps: { poly: number; time: number }[] = []
+  launch: Launch | null = null
 
   constructor(private level: Level) {
     this.pos = { ...level.start }
     this.vines = hangingVines(level)
+    this.flips = level.flippers.map(() => null)
   }
 
   /** An independent copy, for exploring different choices from the same moment. */
   clone(): Sim {
     const copy = new Sim(this.level)
-    const { pos, vel, rope, hook, grounded, stiffness, startLength, gravity, time, gong, slip, broken, launched, flung, vines } = this
-    Object.assign(copy, structuredClone({ pos, vel, rope, hook, grounded, stiffness, startLength, gravity, time, gong, slip, broken, launched, flung, vines }))
+    const { pos, vel, rope, hook, grounded, stiffness, startLength, gravity, time, gong, slip, broken, boost, vines, flips, bumps, launch } = this
+    Object.assign(copy, structuredClone({ pos, vel, rope, hook, grounded, stiffness, startLength, gravity, time, gong, slip, broken, boost, vines, flips, bumps, launch }))
     return copy
   }
 
@@ -126,9 +158,11 @@ export class Sim {
     this.gong = null
     this.slip = null
     this.broken = []
-    this.launched = false
-    this.flung = false
+    this.boost = null
     this.vines = hangingVines(this.level)
+    this.flips = this.level.flippers.map(() => null)
+    this.bumps = []
+    this.launch = null
     this.pos = { ...this.level.start }
     this.vel = { x: 0, y: 0 }
     this.rope = null
@@ -156,8 +190,10 @@ export class Sim {
     const prev = this.pos
     this.time += dt
     if (this.rope) this.rope.age += dt
+    if (this.heldInLauncher()) return
     this.slipOffIce()
     this.reel(reelSpeed * dt)
+    this.triggerFlippers()
     this.vel.y += this.gravity * dt
     this.blowInGusts(dt)
     this.pumpOnVine(dt)
@@ -172,7 +208,83 @@ export class Sim {
       this.updateWraps(firedFrom ?? prev)
     }
     this.collide(dt)
+    this.batWithFlippers(prev, dt)
+    this.catchInLauncher()
     if (this.gong) this.bounceOffGong(this.gong, dt)
+  }
+
+  /** While a launcher holds the player they stay put in its cup, and once it has held them long enough it fires them. */
+  private heldInLauncher(): boolean {
+    const launch = this.launch
+    if (!launch) return false
+    const launcher = this.level.launchers[launch.launcher]
+    const held = this.time - launch.caught
+    if (launch.fired) {
+      if (held > LAUNCHER_HOLD_SECS + LAUNCHER_REARM_SECS) this.launch = null
+      return false
+    }
+    if (held < LAUNCHER_HOLD_SECS) {
+      this.pos = launcherRest(launcher.at)
+      this.vel = { x: 0, y: 0 }
+      this.rope = null
+      this.hook = null
+      return true
+    }
+    this.vel = scale(launcher.aim, launcher.speed)
+    this.boost = 'launcher'
+    launch.fired = true
+    return false
+  }
+
+  private catchInLauncher() {
+    if (this.launch) return
+    const index = this.level.launchers.findIndex((l) => dist(this.pos, launcherRest(l.at)) < LAUNCHER_CATCH)
+    if (index === -1) return
+    this.launch = { launcher: index, caught: this.time, fired: false }
+    this.pos = launcherRest(this.level.launchers[index].at)
+    this.vel = { x: 0, y: 0 }
+    this.rope = null
+    this.hook = null
+  }
+
+  /** A flipper at rest flips when the player comes close to the side it flips towards. */
+  private triggerFlippers() {
+    this.level.flippers.forEach((flipper, i) => {
+      const flipped = this.flips[i]
+      if (flipped !== null && this.time - flipped < FLIP_UP_SECS + FLIP_HOLD_SECS + FLIP_DOWN_SECS) return
+      const dir = angleDir(flipper.rest)
+      const rel = sub(this.pos, flipper.pivot)
+      const along = dot(rel, dir)
+      const facing = cross(dir, rel) * Math.sign(flipper.swing)
+      if (along > -RADIUS && along < flipper.length + RADIUS && facing > 0 && facing < FLIPPER_RADIUS + RADIUS + FLIPPER_REACH) this.flips[i] = this.time
+    })
+  }
+
+  /**
+   * Flippers push the player out like terrain, adding the speed of the paddle where it strikes them. The side the player
+   * was on before this step decides which way they're pushed, so a fast paddle or player can't pass through.
+   */
+  private batWithFlippers(prev: Vec, dt: number) {
+    this.level.flippers.forEach((flipper, i) => {
+      const angleBefore = flipperAngle(flipper, this.flips[i], this.time - dt)
+      const angle = flipperAngle(flipper, this.flips[i], this.time)
+      const dir = angleDir(angle)
+      const rel = sub(this.pos, flipper.pivot)
+      const along = dot(rel, dir)
+      const sideBefore = Math.sign(cross(angleDir(angleBefore), sub(prev, flipper.pivot))) || 1
+      const crossed = Math.sign(cross(dir, rel)) !== sideBefore && along >= 0 && along <= flipper.length
+      const contact = add(flipper.pivot, scale(dir, Math.max(0, Math.min(flipper.length, along))))
+      const reach = FLIPPER_RADIUS + RADIUS
+      const away = sub(this.pos, contact)
+      if (!crossed && len(away) >= reach) return
+      const n = crossed || len(away) < 1e-6 ? scale(perp(dir), sideBefore) : norm(away)
+      this.pos = add(contact, scale(n, reach))
+      const paddle = scale(perp(sub(contact, flipper.pivot)), (angle - angleBefore) / dt)
+      const vn = dot(sub(this.vel, paddle), n)
+      if (vn < 0) this.vel = sub(this.vel, scale(n, vn * (1 + FLIPPER_BOUNCE)))
+      // A paddle swinging into the player bats them; one lying still is like touching terrain
+      this.boost = dot(paddle, n) > 0 ? 'kick' : null
+    })
   }
 
   private bounceOffGong(gong: Gong, dt: number) {
@@ -304,12 +416,11 @@ export class Sim {
       const vine = this.level.vines[onVine.vine]
       const p = vinePoint(vine, this.vines[onVine.vine].angle, onVine.along)
       this.attach(p, vine.kind === 'brown' ? VINE_SNAP_SECS : null, { vine: onVine.vine, along: onVine.along }, VINE_START_LENGTH)
-      this.flung = vine.kind === 'green'
+      if (vine.kind === 'green') this.boost = 'vine'
       return hook.origin
     }
     if (hit) {
       this.attach(add(hit.point, scale(hit.normal, ANCHOR_OFFSET)), GRIP_SECS[hit.poly.surface], { poly: this.level.polys.indexOf(hit.poly) }, this.startLength)
-      this.flung = false
       return hook.origin
     }
     hook.pos = next
@@ -321,7 +432,7 @@ export class Sim {
   private attach(p: Vec, grip: number | null, caught: Caught, startLength: number) {
     const length = Math.max(ROPE_MIN_LENGTH, dist(p, this.pos) * startLength)
     this.rope = { anchors: [{ p, side: 0 }], length, age: 0, grip, caught }
-    this.launched = false
+    this.boost = null
     this.hook = null
   }
 
@@ -364,6 +475,7 @@ export class Sim {
     let onIce = false
     let onRamp = false
     let onOther = false
+    let kicked = false
     for (const poly of this.solidPolys()) {
       const pts = poly.pts
       if (pointInPolygon(this.pos, pts)) this.pos = escapePolygon(this.pos, pts, poly.edgeNormals)
@@ -377,10 +489,15 @@ export class Sim {
         const isFloor = n.y < -0.6
         const isCeiling = n.y > 0.6
         // Only sliding on top of a ramp launches; brushing its sides or underneath neither launches nor lands
-        if (!poly.ramp) onOther = true
-        else if (isFloor) onRamp = true
+        if (poly.ramp) onRamp ||= isFloor
+        else if (!poly.bumper) onOther = true
         const vn = dot(this.vel, n)
-        if (vn < 0) {
+        if (vn < 0 && poly.bumper) {
+          this.vel = add(this.vel, scale(n, -2 * vn + BUMPER_KICK))
+          const index = this.level.polys.indexOf(poly)
+          this.bumps = [...this.bumps.filter((b) => b.poly !== index), { poly: index, time: this.time }]
+          kicked = true
+        } else if (vn < 0) {
           const restitution = isFloor ? FLOOR_BOUNCE : isCeiling ? CEILING_BOUNCE : WALL_BOUNCE
           const bounce = vn < -120 ? restitution : 0
           this.vel = sub(this.vel, scale(n, vn * (1 + bounce)))
@@ -391,13 +508,13 @@ export class Sim {
         }
       }
     }
-    if (onOther) this.launched = false
-    else if (onRamp) this.launched = true
-    if (onOther || onRamp) this.flung = false
+    if (kicked) this.boost = 'kick'
+    else if (onOther) this.boost = null
+    else if (onRamp) this.boost = 'ramp'
     if (!this.grounded || this.rope) return
     this.vel.x *= Math.exp(-(onIce ? ICE_FRICTION : GROUND_FRICTION) * dt)
     const speed = len(this.vel)
-    const push = (onIce ? ICE_GLIDE : 0) + (this.launched ? RAMP_BOOST : 0)
+    const push = (onIce ? ICE_GLIDE : 0) + (this.boost === 'ramp' ? RAMP_BOOST : 0)
     if (push && speed > GLIDE_MIN_SPEED) this.vel = scale(this.vel, Math.min(this.speedLimit(), speed + push * dt) / speed)
   }
 
@@ -443,7 +560,7 @@ export class Sim {
   }
 
   private speedLimit(): number {
-    return this.launched ? LAUNCH_MAX_SPEED : this.flung ? VINE_MAX_SPEED : MAX_SPEED
+    return this.boost ? BOOST_MAX_SPEED[this.boost] : MAX_SPEED
   }
 
   /** The terrain still in place, leaving out ice that has broken off. */
@@ -472,6 +589,23 @@ function escapePolygon(p: Vec, pts: Vec[], normals: Vec[]): Vec {
     if (d < best.d) best = { d, point: add(c, scale(normals[i], RADIUS)) }
   }
   return best.point
+}
+
+/** A flipper's angle at `time`, given when it last flipped: up quickly, a moment held, then back down. */
+export function flipperAngle(flipper: Flipper, flipped: number | null, time: number): number {
+  if (flipped === null) return flipper.rest
+  const t = time - flipped
+  const raised = t < FLIP_UP_SECS ? t / FLIP_UP_SECS : t < FLIP_UP_SECS + FLIP_HOLD_SECS ? 1 : 1 - (t - FLIP_UP_SECS - FLIP_HOLD_SECS) / FLIP_DOWN_SECS
+  return flipper.rest + flipper.swing * Math.max(0, Math.min(1, raised))
+}
+
+/** Where the player sits in a launcher's cup, given the middle of its floor. */
+export function launcherRest(floor: Vec): Vec {
+  return { x: floor.x, y: floor.y - RADIUS }
+}
+
+function angleDir(angle: number): Vec {
+  return { x: Math.cos(angle), y: Math.sin(angle) }
 }
 
 function hangingVines(level: Level): VineState[] {

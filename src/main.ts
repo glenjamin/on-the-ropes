@@ -26,6 +26,7 @@ const DEATHS: Record<Theme, { message: string; sinks: boolean }> = {
   clouds: { message: 'Lost in the clouds', sinks: false },
   ice: { message: 'Frozen solid', sinks: true },
   jungle: { message: 'Swept downriver', sinks: true },
+  pinball: { message: 'Drained', sinks: false },
 }
 /** Best time per level id; a level counts as completed once it has one. */
 const PROGRESS_KEY = 'on-the-ropes:progress'

@@ -10,12 +10,16 @@
 - Jungle (set 4) is unplayed apart from an early look at the vines, which were calmed down after feeling too springy. Things to try: how heavy a vine swing feels (`VINE_MASS`, `VINE_DAMPING`, `VINE_ROPE_STIFFNESS`, `VINE_ROPE_DAMPING`, `VINE_START_LENGTH` in `src/sim.ts`), how hard a green vine flings you (`VINE_PUMP`, `VINE_MAX_SPEED`), and how long a brown vine holds (`VINE_SNAP_SECS`). The green-only gaps (4-1, 4-2, both in 4-5) were checked by turning that vine brown and seeing the bot fail, so retuning the green fling means re-checking them
 - A rope caught on a vine keeps its wraps round terrain corners, but only the segment to the player wraps; a vine swinging its first segment through terrain doesn't bend it. Levels keep vines in open air so it doesn't show
 - The bot sees vines and aims where they hang at that moment, but like ice it can't tell green from brown except by simulating
+- Pinball (set 5) is unplayed. Things to try: how hard bumpers kick (`BUMPER_KICK`) and how fast a bumper or flipper can send you (`KICK_MAX_SPEED`), flipper timing and feel (`FLIP_UP_SECS`, `FLIP_HOLD_SECS`, `FLIP_DOWN_SECS`, `FLIPPER_REACH`, `FLIPPER_BOUNCE`), how long a launcher holds you (`LAUNCHER_HOLD_SECS`), all in `src/sim.ts`, and each launcher's own `speed` and `aim` in 5-3 and 5-5. The flipper gap in 5-2 and the launchers in 5-3 and 5-5 were checked by removing them and seeing the bot fail, so retuning bats or launches means re-checking them
+- A flipper only gains about as much height as a good swing does, wherever it is, so it can bat you across a gap but not up to somewhere out of reach; 5-5 climbs with a launcher instead
+- Flippers aren't grabbable and the rope passes through them; a launcher's cup is ordinary terrain the rope can catch on, and is shallow, so it can only fire upwards of about 30° above level without clipping its rim
+- Like ice, the bot treats bumpers as rock when picking targets and finds out about the kick by simulating
 
 ## Ideas for later sets
 
 - Other jungle mechanics we didn't build: springy leaves that launch you, thorny branches the rope slides off. Trunks are a background layer in the level format that other sets could use for hills behind the lava or distant clouds
 - Crumbling rocks that break a second or two after being grabbed
-- Lava vents or bouncy pads for launches
+- Lava vents or bouncy pads for launches; the pinball launcher's cup could be reskinned as either
 - Hazard surfaces that kill on touch away from the lava
 - Moving rocks that carry the rope anchor with them (the most work: moving collision and anchors)
 

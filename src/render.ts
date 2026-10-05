@@ -1,7 +1,7 @@
-import { norm, type Vec } from './geom'
+import { add, norm, scale, sub, type Vec } from './geom'
 import { gongCentre, restingGong } from './gong'
 import { gustStrength, type Level, type Poly, type Surface, type Theme, type Vine, type VineKind } from './level'
-import { GONG_CORD_LENGTH, RADIUS, vinePoint, type Sim } from './sim'
+import { flipperAngle, FLIPPER_RADIUS, GONG_CORD_LENGTH, LAUNCHER_HOLD_SECS, launcherRest, RADIUS, vinePoint, type Sim } from './sim'
 
 export type Camera = { pos: Vec; zoom: number }
 /** Transient visuals: the player's recent path (oldest first) and rings where the screen was tapped. */
@@ -38,6 +38,13 @@ const ICE_LOOKS: Record<Surface, { fill: string; stroke: string; sheen: string }
   'dark-ice': { fill: '#1e5096', stroke: '#8fd0f5', sheen: 'rgba(160, 215, 255, 0.4)' },
 }
 
+/** How long a bumper lights up after kicking the player. */
+const BUMP_FLASH_SECS = 0.35
+const BUMPER_LOOK = { fill: '#ff2f9a', core: '#ffd1ec', stroke: '#fff2fa' }
+const FLIPPER_LOOK = { fill: '#f4f6ff', stroke: '#36e0ff' }
+/** How long a launcher's chevrons blaze after it fires. */
+const LAUNCH_FLASH_SECS = 0.6
+
 type Rgb = [number, number, number]
 type Palette = {
   sky: [top: string, middle: string, bottom: string]
@@ -47,6 +54,8 @@ type Palette = {
   snow: boolean
   /** Snow or moss along the tops of terrain. */
   caps: string | null
+  /** A neon glow around terrain outlines. */
+  glow: boolean
   rope: string
   /** Trail colour at the player, fading to `trailFar` at its tail. */
   trailNear: Rgb
@@ -61,6 +70,7 @@ const PALETTES: Record<Theme, Palette> = {
     stars: true,
     snow: false,
     caps: null,
+    glow: false,
     rope: '#e8c78a',
     trailNear: [255, 255, 255],
     trailFar: [80, 220, 255],
@@ -72,6 +82,7 @@ const PALETTES: Record<Theme, Palette> = {
     stars: false,
     snow: false,
     caps: null,
+    glow: false,
     rope: '#8a5a32',
     trailNear: [255, 120, 170],
     trailFar: [120, 150, 255],
@@ -83,6 +94,7 @@ const PALETTES: Record<Theme, Palette> = {
     stars: false,
     snow: true,
     caps: '#f2f8ff',
+    glow: false,
     rope: '#d9a066',
     trailNear: [255, 255, 255],
     trailFar: [255, 170, 90],
@@ -94,9 +106,22 @@ const PALETTES: Record<Theme, Palette> = {
     stars: false,
     snow: false,
     caps: '#6cb83f',
+    glow: false,
     rope: '#f0d9a0',
     trailNear: [255, 250, 200],
     trailFar: [255, 140, 60],
+  },
+  pinball: {
+    sky: ['#06021a', '#12083a', '#260a3f'],
+    terrainFill: '#140c33',
+    terrainStroke: '#36e0ff',
+    stars: false,
+    snow: false,
+    caps: null,
+    glow: true,
+    rope: '#ffe066',
+    trailNear: [255, 255, 255],
+    trailFar: [255, 60, 200],
   },
 }
 
@@ -135,6 +160,7 @@ export function render(ctx: CanvasRenderingContext2D, w: number, h: number, cam:
   if (palette.stars) drawStars(ctx, cam, w, h)
   if (palette.snow) drawSnow(ctx, cam, w, h, time)
   if (level.theme === 'jungle') drawCanopyLight(ctx, cam, w, h, time)
+  if (level.theme === 'pinball') drawPlayfieldLights(ctx, cam, w, h, time)
   ctx.translate(-cam.pos.x, -cam.pos.y)
 
   drawGusts(ctx, level, sim.time)
@@ -142,19 +168,22 @@ export function render(ctx: CanvasRenderingContext2D, w: number, h: number, cam:
   drawGong(ctx, level, sim)
   drawVines(ctx, level, sim)
   drawTerrain(ctx, level, sim, palette)
+  drawLaunchers(ctx, level, sim, time)
+  drawFlippers(ctx, level, sim)
   for (const flag of level.flags) drawFlag(ctx, flag, time)
   drawRope(ctx, sim, palette)
   if (level.theme === 'jungle') drawVineSnap(ctx, sim)
   else drawIcePuff(ctx, sim)
   drawTrail(ctx, fx.trail, palette)
   if (fx.sinking) drawSinkingPlayer(ctx, fx.sinking, level.theme, time)
-  else drawPlayer(ctx, sim.pos, sim.vel, time, sim.launched)
+  else drawPlayer(ctx, sim.pos, sim.vel, time, sim.boost === 'ramp')
   if (level.theme === 'lava') drawLava(ctx, level, cam, w, h, time)
   else if (level.theme === 'ice') drawWater(ctx, level, cam, w, h, time)
   else if (level.theme === 'jungle') drawRiver(ctx, level, cam, w, h, time)
+  else if (level.theme === 'pinball') drawDrain(ctx, level, cam, w, h, time)
   else drawFog(ctx, level, cam, w, h)
   if (fx.sinking && level.theme === 'lava') drawSplash(ctx, fx.sinking, level)
-  if (fx.sinking && level.theme !== 'lava' && level.theme !== 'clouds') drawWaterSplash(ctx, fx.sinking, level, SPLASHES[level.theme])
+  if (fx.sinking && (level.theme === 'ice' || level.theme === 'jungle')) drawWaterSplash(ctx, fx.sinking, level, SPLASHES[level.theme])
   drawTapRings(ctx, fx.tapRings)
 
   ctx.restore()
@@ -190,7 +219,7 @@ function drawStars(ctx: CanvasRenderingContext2D, cam: Camera, w: number, h: num
 
 /**
  * Rock in the theme's colours, capped with snow in snowy themes; ice is glassy so it reads apart from rock, and dark ice
- * a deeper blue; launch ramps are striped. Pieces that have broken off tumble away and fade.
+ * a deeper blue; launch ramps are striped, and bumpers light up as they kick. Pieces that have broken off tumble away and fade.
  */
 function drawTerrain(ctx: CanvasRenderingContext2D, level: Level, sim: Sim, palette: Palette) {
   ctx.lineWidth = 3
@@ -212,12 +241,18 @@ function drawTerrain(ctx: CanvasRenderingContext2D, level: Level, sim: Sim, pale
     poly.pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)))
     ctx.closePath()
     const ice = ICE_LOOKS[poly.surface]
-    const look = ice ?? (poly.foliage ? FOLIAGE : null)
+    const look = ice ?? (poly.foliage ? FOLIAGE : poly.bumper ? BUMPER_LOOK : null)
     ctx.fillStyle = look?.fill ?? palette.terrainFill
     ctx.strokeStyle = look?.stroke ?? palette.terrainStroke
+    if (palette.glow) {
+      ctx.shadowColor = ctx.strokeStyle
+      ctx.shadowBlur = 12
+    }
     ctx.fill()
     ctx.stroke()
-    if (ice) drawIceSheen(ctx, poly, ice.sheen)
+    ctx.shadowBlur = 0
+    if (poly.bumper) drawBumperLight(ctx, poly, sim.bumps.find((b) => b.poly === index), sim.time)
+    else if (ice) drawIceSheen(ctx, poly, ice.sheen)
     else if (poly.foliage) drawLeafDapples(ctx, poly)
     else if (palette.caps) drawCaps(ctx, poly, palette.caps)
     if (poly.ramp) drawRampStripe(ctx, poly)
@@ -1015,6 +1050,161 @@ function drawRiver(ctx: CanvasRenderingContext2D, level: Level, cam: Camera, w: 
     ctx.beginPath()
     ctx.ellipse(x, surface(x) + 1, 7, 3, 0.3, 0, Math.PI * 2)
     ctx.fill()
+  }
+}
+
+/** A bumper's lit core, blazing white with a ring spreading from it just after it kicks the player. */
+function drawBumperLight(ctx: CanvasRenderingContext2D, poly: Poly, bump: { time: number } | undefined, time: number) {
+  const centre = scale(poly.pts.reduce(add), 1 / poly.pts.length)
+  const flash = bump ? Math.max(0, 1 - (time - bump.time) / BUMP_FLASH_SECS) : 0
+  ctx.fillStyle = BUMPER_LOOK.core
+  ctx.globalAlpha = 0.55 + 0.45 * flash
+  ctx.beginPath()
+  poly.pts.forEach((p, i) => {
+    const inner = add(centre, scale(sub(p, centre), 0.55 + 0.15 * flash))
+    if (i === 0) ctx.moveTo(inner.x, inner.y)
+    else ctx.lineTo(inner.x, inner.y)
+  })
+  ctx.closePath()
+  ctx.fill()
+  ctx.globalAlpha = 1
+  if (!flash) return
+  ctx.strokeStyle = `rgba(255, 240, 250, ${0.8 * flash})`
+  ctx.lineWidth = 4
+  ctx.beginPath()
+  poly.pts.forEach((p, i) => {
+    const outer = add(centre, scale(sub(p, centre), 1 + 0.6 * (1 - flash)))
+    if (i === 0) ctx.moveTo(outer.x, outer.y)
+    else ctx.lineTo(outer.x, outer.y)
+  })
+  ctx.closePath()
+  ctx.stroke()
+}
+
+/** Each flipper as a rounded paddle at its current angle, with a cap over its pivot. */
+function drawFlippers(ctx: CanvasRenderingContext2D, level: Level, sim: Sim) {
+  ctx.lineCap = 'round'
+  level.flippers.forEach((flipper, i) => {
+    const angle = flipperAngle(flipper, sim.flips[i], sim.time)
+    const tip = add(flipper.pivot, scale({ x: Math.cos(angle), y: Math.sin(angle) }, flipper.length))
+    for (const [colour, width] of [[FLIPPER_LOOK.stroke, FLIPPER_RADIUS * 2 + 3], [FLIPPER_LOOK.fill, FLIPPER_RADIUS * 2 - 3]] as const) {
+      ctx.strokeStyle = colour
+      ctx.lineWidth = width
+      ctx.beginPath()
+      ctx.moveTo(flipper.pivot.x, flipper.pivot.y)
+      ctx.lineTo(tip.x, tip.y)
+      ctx.stroke()
+    }
+    ctx.fillStyle = '#ff2f9a'
+    ctx.beginPath()
+    ctx.arc(flipper.pivot.x, flipper.pivot.y, 4, 0, Math.PI * 2)
+    ctx.fill()
+  })
+}
+
+/**
+ * Chevrons pointing the way each launcher fires, chasing outwards while it waits; while it holds the player they light
+ * one by one as it charges, then all blaze as it fires.
+ */
+function drawLaunchers(ctx: CanvasRenderingContext2D, level: Level, sim: Sim, time: number) {
+  level.launchers.forEach((launcher, i) => {
+    const rest = launcherRest(launcher.at)
+    const launch = sim.launch?.launcher === i ? sim.launch : null
+    const held = launch ? sim.time - launch.caught : 0
+    const chevrons = 5
+    const charge = launch && !launch.fired ? held / LAUNCHER_HOLD_SECS : 0
+    const blaze = launch?.fired ? Math.max(0, 1 - (held - LAUNCHER_HOLD_SECS) / LAUNCH_FLASH_SECS) : 0
+    const across = { x: -launcher.aim.y, y: launcher.aim.x }
+    ctx.lineWidth = 5
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
+    for (let c = 0; c < chevrons; c++) {
+      const chase = (time * 2.5 - c / chevrons) % 1 < 0.25 ? 1 : 0
+      const lit = launch ? Math.max(charge * chevrons > c ? 1 : 0, blaze) : 0.25 + 0.6 * chase
+      const at = add(rest, scale(launcher.aim, 70 + c * 34))
+      const back = add(at, scale(launcher.aim, -16))
+      ctx.strokeStyle = `rgba(255, ${Math.round(200 - 120 * lit)}, ${Math.round(80 + 100 * lit)}, ${0.25 + 0.75 * lit})`
+      ctx.beginPath()
+      ctx.moveTo(back.x + across.x * 11, back.y + across.y * 11)
+      ctx.lineTo(at.x, at.y)
+      ctx.lineTo(back.x - across.x * 11, back.y - across.y * 11)
+      ctx.stroke()
+    }
+    // A glow in the cup, brightening as it charges
+    const glow = ctx.createRadialGradient(rest.x, rest.y, 0, rest.x, rest.y, 50)
+    glow.addColorStop(0, `rgba(255, 220, 100, ${0.25 + 0.6 * Math.max(charge, blaze)})`)
+    glow.addColorStop(1, 'rgba(255, 120, 60, 0)')
+    ctx.fillStyle = glow
+    ctx.fillRect(rest.x - 50, rest.y - 50, 100, 100)
+  })
+}
+
+/** Rows of round and arrow-shaped lamps set into the playfield behind everything, blinking in chases, with a little parallax. */
+function drawPlayfieldLights(ctx: CanvasRenderingContext2D, cam: Camera, w: number, h: number, time: number) {
+  const parallax = 0.35
+  const halfW = w / 2 / cam.zoom
+  const halfH = h / 2 / cam.zoom
+  const spacing = 150
+  const colours = ['255, 60, 200', '54, 224, 255', '255, 220, 80', '120, 255, 140']
+  const shift = { x: cam.pos.x * parallax, y: cam.pos.y * parallax }
+  for (let i = Math.floor((shift.x - halfW) / spacing) - 1; i * spacing < shift.x + halfW + spacing; i++) {
+    for (let j = Math.floor((shift.y - halfH) / spacing) - 1; j * spacing < shift.y + halfH + spacing; j++) {
+      const n = hash(i * 7.3 + j * 13.1)
+      if (n < 0.55) continue
+      const x = i * spacing + hash(i * 3.7 + j) * 60 - shift.x
+      const y = j * spacing + hash(j * 5.9 + i) * 60 - shift.y
+      const on = (time * 1.6 + i * 0.13 + j * 0.29) % 1 < 0.3
+      ctx.fillStyle = `rgba(${colours[Math.floor(n * 97) % colours.length]}, ${on ? 0.45 : 0.1})`
+      ctx.beginPath()
+      if (n > 0.85) {
+        ctx.moveTo(x, y - 14)
+        ctx.lineTo(x + 10, y + 8)
+        ctx.lineTo(x - 10, y + 8)
+        ctx.closePath()
+      } else {
+        ctx.arc(x, y, 7 + n * 5, 0, Math.PI * 2)
+      }
+      ctx.fill()
+    }
+  }
+}
+
+/** For pinball levels: a dark drain across the bottom, its glowing edge marked with arrows that flash downwards. */
+function drawDrain(ctx: CanvasRenderingContext2D, level: Level, cam: Camera, w: number, h: number, time: number) {
+  const left = cam.pos.x - w / 2 / cam.zoom - 20
+  const right = cam.pos.x + w / 2 / cam.zoom + 20
+  const bottom = cam.pos.y + h / 2 / cam.zoom + 20
+  if (bottom < level.deathY - 60) return
+  const top = level.deathY
+  const pit = ctx.createLinearGradient(0, top, 0, top + 200)
+  pit.addColorStop(0, '#2a0630')
+  pit.addColorStop(1, '#020006')
+  ctx.fillStyle = pit
+  ctx.fillRect(left, top, right - left, Math.max(bottom, top + 40) - top)
+  ctx.strokeStyle = '#ff2f9a'
+  ctx.shadowColor = '#ff2f9a'
+  ctx.shadowBlur = 14
+  ctx.lineWidth = 4
+  ctx.beginPath()
+  ctx.moveTo(left, top)
+  ctx.lineTo(right, top)
+  ctx.stroke()
+  ctx.shadowBlur = 0
+
+  const spacing = 160
+  for (let i = Math.floor(left / spacing); i * spacing < right; i++) {
+    const x = i * spacing + spacing / 2
+    for (let k = 0; k < 3; k++) {
+      const lit = (time * 3 - k / 3) % 1 < 0.34
+      const y = top - 70 + k * 18
+      ctx.strokeStyle = `rgba(255, 80, 120, ${lit ? 0.75 : 0.15})`
+      ctx.lineWidth = 3
+      ctx.beginPath()
+      ctx.moveTo(x - 12, y)
+      ctx.lineTo(x, y + 10)
+      ctx.lineTo(x + 12, y)
+      ctx.stroke()
+    }
   }
 }
 

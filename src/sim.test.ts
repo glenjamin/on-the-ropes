@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { dist, pointInPolygon, segmentHit, type Vec } from './geom'
 import { gongCentre } from './gong'
-import { buildLevel, type Level, type LevelData, type Surface } from './level'
+import { buildLevel, type FlipperData, type Level, type LevelData, type Shape, type Surface } from './level'
 import lavaCave from './levels/1-2'
 import { skiJump } from './levels/ice'
-import { GONG_CORD_LENGTH, Sim } from './sim'
+import { bumper } from './levels/pinball'
+import { flipperAngle, FLIPPER_RADIUS, GONG_CORD_LENGTH, RADIUS, Sim } from './sim'
 
 const DT = 1 / 240
 const REEL_SPEED = 450
@@ -327,6 +328,102 @@ describe('swinging on the rope', () => {
     expect(furthest).toBeLessThan(GONG_CORD_LENGTH + 50)
   })
 
+  it('a bumper kicks the player away faster than they hit it, where a rock would soak most of it up', () => {
+    const reboundOff = (shape: Shape) => {
+      const sim = new Sim(buildLevel({ ...flat, start: [-200, 0], shapes: [shape] }))
+      sim.gravity = 0
+      sim.vel = { x: 500, y: 0 }
+      run(sim, 0.6, 0)
+      return -sim.vel.x
+    }
+    expect(reboundOff(bumper(0, 0, 40))).toBeGreaterThan(800)
+    expect(reboundOff({ ...bumper(0, 0, 40), bumper: false })).toBeLessThan(500 * 0.5)
+  })
+
+  it('a flipper flips as the player drops onto it and bats them up higher than they fell from', () => {
+    const sim = new Sim(buildLevel({ ...flat, start: [100, -150], flippers: [leftFlipper] }))
+    let highest = Infinity
+    let fastest = 0
+    for (let t = 0; t < 1.2; t += DT) {
+      sim.step(DT, 0)
+      if (t > 0.3) highest = Math.min(highest, sim.pos.y)
+      fastest = Math.max(fastest, Math.hypot(sim.vel.x, sim.vel.y))
+    }
+    expect(sim.flips[0]).not.toBeNull()
+    expect(highest).toBeLessThan(-300)
+    expect(fastest).toBeGreaterThan(900)
+  })
+
+  it('a flipper can’t be passed through, even at launch speed against the swing of the paddle', () => {
+    // Long, so its tip and a launched player together close more than the touching distance in one step
+    const level = buildLevel({ ...flat, flippers: [{ ...leftFlipper, length: 240 }] })
+    const flipper = level.flippers[0]
+    // Where the player is across the paddle: how far along it, and how far off its face (signed by side)
+    const across = (sim: Sim) => {
+      const angle = flipperAngle(flipper, sim.flips[0], sim.time)
+      const rel = { x: sim.pos.x - flipper.pivot.x, y: sim.pos.y - flipper.pivot.y }
+      return { along: rel.x * Math.cos(angle) + rel.y * Math.sin(angle), off: Math.cos(angle) * rel.y - Math.sin(angle) * rel.x }
+    }
+    let approaches = 0
+    let throughs = 0
+    for (let along = 20; along < flipper.length; along += 20) {
+      for (const side of [-1, 1]) {
+        for (const [tilt, gap] of [-0.6, 0, 0.6].flatMap((tilt) => [60, 63, 66, 69, 72].map((gap) => [tilt, gap]))) {
+          const sim = new Sim(level)
+          const dir = { x: Math.cos(flipper.rest), y: Math.sin(flipper.rest) }
+          const out = { x: -dir.y * side, y: dir.x * side }
+          sim.gravity = 0
+          sim.boost = 'launcher'
+          sim.pos = { x: flipper.pivot.x + dir.x * along + out.x * gap, y: flipper.pivot.y + dir.y * along + out.y * gap }
+          const towards = { x: -out.x + dir.x * tilt, y: -out.y + dir.y * tilt }
+          const speed = 3600 / Math.hypot(towards.x, towards.y)
+          sim.vel = { x: towards.x * speed, y: towards.y * speed }
+          sim.flips[0] = 0
+          approaches++
+          let before = across(sim)
+          for (let t = 0; t < 0.4; t += DT) {
+            sim.step(DT, 0)
+            const now = across(sim)
+            const onPaddle = (a: { along: number }) => a.along > 0 && a.along < flipper.length
+            const inside = onPaddle(now) && Math.abs(now.off) < FLIPPER_RADIUS + RADIUS - 1
+            const crossed = onPaddle(before) && onPaddle(now) && Math.sign(now.off) !== Math.sign(before.off)
+            if (inside || crossed) throughs++
+            before = now
+          }
+        }
+      }
+    }
+    expect(approaches).toBeGreaterThan(30)
+    expect(throughs).toBe(0)
+  })
+
+  it('a launcher holds the player in its cup, then fires them past the usual speed limit until the next rope catches', () => {
+    const sim = new Sim(buildLevel({ ...flat, start: [0, -200], launchers: [{ at: [0, 0], aim: [1, -1], speed: 2400 }], shapes: [{ rect: [-1000, -1000, 6000, 100] }] }))
+    for (let t = 0; t < 1 && !sim.launch; t += DT) sim.step(DT, 0)
+    expect(sim.launch).not.toBeNull()
+    const caughtAt = { ...sim.pos }
+    run(sim, 0.4, 0)
+    expect(dist(sim.pos, caughtAt)).toBeLessThan(1)
+    expect(Math.hypot(sim.vel.x, sim.vel.y)).toBe(0)
+
+    let fastest = 0
+    for (let t = 0; t < 0.25; t += DT) {
+      sim.step(DT, 0)
+      fastest = Math.max(fastest, Math.hypot(sim.vel.x, sim.vel.y))
+    }
+    expect(fastest).toBeGreaterThan(2000)
+    expect(sim.pos.x).toBeGreaterThan(200)
+
+    sim.fire({ x: 0, y: -1 })
+    while (!sim.rope) sim.step(DT, 0)
+    let afterGrab = 0
+    for (let t = 0; t < 0.5; t += DT) {
+      sim.step(DT, -200)
+      afterGrab = Math.max(afterGrab, Math.hypot(sim.vel.x, sim.vel.y))
+    }
+    expect(afterGrab).toBeLessThanOrEqual(900 + 1e-6)
+  })
+
   it('never lets the player or the rope pass through terrain during random play', () => {
     const stats = randomPlay(400)
     expect(stats.attaches).toBeGreaterThan(200)
@@ -344,6 +441,9 @@ describe('swinging on the rope', () => {
     expect(stats.unbends).toBeGreaterThan(0)
   })
 })
+
+/** A left-hand flipper pointing down to the right, which flips up anticlockwise. */
+const leftFlipper: FlipperData = { pivot: [0, 0], length: 150, rest: 30, swing: -60 }
 
 /** An empty level to build test terrain into. */
 const flat: LevelData = { id: 't', name: 't', theme: 'ice', start: [0, 0], goal: [9000, 0], deathY: 1e6, shapes: [] }
