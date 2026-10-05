@@ -1,7 +1,10 @@
 // Renders one frame of a scripted run so the game can be inspected in a known state.
 // Query params: ang (fire angle in radians, omit to stay put), reel (rope speed once attached; negative reels in),
 // secs (max seconds to simulate), until=bend (stop as soon as the rope bends round a corner),
-// level (id, default 1-2), overview (show the whole level instead of following the player).
+// level (id, default 1-2), overview (show the whole level instead of following the player),
+// route (draw the bot's saved route for the level over it; see `npm run bot -- --trace`).
+import type { Trace } from '../src/bot'
+import type { Vec } from '../src/geom'
 import { buildLevel } from '../src/level'
 import { LEVELS } from '../src/levels'
 import { cameraFocus, render, zoomFor } from '../src/render'
@@ -38,6 +41,7 @@ ctx.scale(devicePixelRatio, devicePixelRatio)
 const zoom = zoomFor(innerWidth, innerHeight)
 const cam = params.has('overview') ? overviewCamera() : { pos: cameraFocus(sim.pos, innerHeight, zoom), zoom }
 render(ctx, innerWidth, innerHeight, cam, level, sim, { trail: trail.map((s) => s.p), tapRings: [] }, t)
+if (params.has('route')) await drawRoute(ctx, cam)
 
 document.body.dataset.summary = JSON.stringify({
   t: Number(t.toFixed(3)),
@@ -46,12 +50,61 @@ document.body.dataset.summary = JSON.stringify({
   hookFlying: sim.hook !== null,
 })
 
-/** Frames the playable span: start to goal across, top of the screen to just below the lava. */
+/** Frames the playable span: all the terrain across, from above the higher of start and goal down to just below the death line. */
 function overviewCamera() {
-  const left = level.start.x - 250
-  const right = level.goal.pos.x + 350
-  const top = -100
+  const xs = level.polys.flatMap((p) => p.pts.map((pt) => pt.x))
+  const left = Math.min(...xs, level.start.x) - 100
+  const right = Math.max(...xs, level.goal.pos.x) + 100
+  const top = Math.min(level.start.y, level.goal.pos.y, 400) - 500
   const bottom = level.deathY + 80
   const zoom = Math.min(innerWidth / (right - left), innerHeight / (bottom - top))
   return { pos: { x: (left + right) / 2, y: (top + bottom) / 2 }, zoom }
+}
+
+/** Overlays the bot's route: its flight path, a line from each firing point to where the rope caught (numbered), and each let-go. */
+async function drawRoute(ctx: CanvasRenderingContext2D, cam: { pos: Vec; zoom: number }) {
+  const response = await fetch(`/snapshots/route-${level.id}.json`)
+  const trace: unknown = await response.json()
+  if (!isTrace(trace)) throw new Error('not a route trace')
+  const screen = (p: Vec) => ({ x: (p.x - cam.pos.x) * cam.zoom + innerWidth / 2, y: (p.y - cam.pos.y) * cam.zoom + innerHeight / 2 })
+
+  ctx.strokeStyle = '#ff2fa0'
+  ctx.lineWidth = 2
+  ctx.beginPath()
+  trace.path.forEach((p, i) => {
+    const s = screen(p)
+    if (i === 0) ctx.moveTo(s.x, s.y)
+    else ctx.lineTo(s.x, s.y)
+  })
+  ctx.stroke()
+
+  ctx.font = 'bold 11px system-ui'
+  trace.grabs.forEach(({ from, anchor }, i) => {
+    if (!anchor) return
+    const [a, b] = [screen(from), screen(anchor)]
+    ctx.strokeStyle = 'rgba(255, 220, 0, 0.8)'
+    ctx.setLineDash([4, 3])
+    ctx.beginPath()
+    ctx.moveTo(a.x, a.y)
+    ctx.lineTo(b.x, b.y)
+    ctx.stroke()
+    ctx.setLineDash([])
+    ctx.fillStyle = '#ffdc00'
+    ctx.beginPath()
+    ctx.arc(b.x, b.y, 3.5, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.fillStyle = '#000'
+    ctx.fillText(String(i + 1), b.x + 5, b.y - 5)
+  })
+  ctx.fillStyle = '#fff'
+  for (const r of trace.releases) {
+    const s = screen(r)
+    ctx.beginPath()
+    ctx.arc(s.x, s.y, 3, 0, Math.PI * 2)
+    ctx.fill()
+  }
+}
+
+function isTrace(x: unknown): x is Trace {
+  return typeof x === 'object' && x !== null && 'path' in x && Array.isArray(x.path) && 'grabs' in x && Array.isArray(x.grabs) && 'releases' in x && Array.isArray(x.releases)
 }

@@ -67,6 +67,14 @@ export class Sim {
     this.pos = { ...level.start }
   }
 
+  /** An independent copy, for exploring different choices from the same moment. */
+  clone(): Sim {
+    const copy = new Sim(this.level)
+    const { pos, vel, rope, hook, grounded, stiffness, startLength, gravity, time, gong } = this
+    Object.assign(copy, structuredClone({ pos, vel, rope, hook, grounded, stiffness, startLength, gravity, time, gong }))
+    return copy
+  }
+
   reset() {
     this.time = 0
     this.gong = null

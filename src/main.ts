@@ -2,18 +2,10 @@ import { add, dist, len, scale, sub, type Vec } from './geom'
 import { buildLevel, type Level } from './level'
 import { LEVELS, SETS } from './levels'
 import { cameraFocus, render, TAP_RING_SECS, zoomFor, type Camera } from './render'
+import { playStep, SUBSTEP, TIME_SCALE } from './pace'
 import { RADIUS, Sim } from './sim'
 
-const SUBSTEP = 1 / 240
-/** Game time runs slower than real time, giving players longer to read each swing. */
-const TIME_SCALE = 0.8
 const MAX_FRAME = 0.1
-/** The rope always reels in while attached; with momentum kept, that is what builds a swing. */
-const AUTO_REEL_SPEED = 200
-/** Reeling starts this fast and eases down to the steady speed. */
-const AUTO_REEL_BURST = 450
-/** Seconds of game time to ease from the burst down to the steady speed. */
-const AUTO_REEL_EASE = 1.5
 const TRAIL_SECS = 1.8
 /** Touches this close (CSS px) to the sides or bottom are hands gripping the phone, not taps. */
 const GRIP_EDGE_SIDES = 28
@@ -292,11 +284,6 @@ function inGripZone(x: number, y: number): boolean {
   return x < GRIP_EDGE_SIDES || x > innerWidth - GRIP_EDGE_SIDES || y > innerHeight - GRIP_EDGE_BOTTOM
 }
 
-function autoReelSpeed(ropeAge: number): number {
-  const remaining = 1 - Math.min(1, ropeAge / AUTO_REEL_EASE)
-  return AUTO_REEL_SPEED + (AUTO_REEL_BURST - AUTO_REEL_SPEED) * remaining * remaining
-}
-
 function screenToWorld(x: number, y: number): Vec {
   return {
     x: cam.pos.x + (x - innerWidth / 2) / cam.zoom,
@@ -313,7 +300,7 @@ function plummet(dt: number) {
 function stepSim(dt: number) {
   accumulator += dt * TIME_SCALE
   while (accumulator >= SUBSTEP) {
-    sim.step(SUBSTEP, -autoReelSpeed(sim.rope?.age ?? 0))
+    playStep(sim)
     accumulator -= SUBSTEP
   }
 }

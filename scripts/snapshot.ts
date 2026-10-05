@@ -11,6 +11,7 @@ const SCENARIOS = [
   { name: 'swing', query: 'ang=-1.1&reel=-120&secs=2' },
   { name: 'bend', query: 'ang=-0.9&reel=-120&secs=8&until=bend' },
   ...(await levelIds()).map((id) => ({ name: `overview-${id}`, query: `level=${id}&overview` })),
+  ...(await tracedLevelIds()).map((id) => ({ name: `route-${id}`, query: `level=${id}&overview&route` })),
 ]
 
 const VIEWPORTS = [
@@ -42,4 +43,10 @@ await withBrowser(async (browser, baseUrl) => {
 async function levelIds() {
   const files = await readdir('src/levels')
   return files.filter((f) => /^\d+-\d+\.ts$/.test(f)).map((f) => f.replace('.ts', ''))
+}
+
+/** Levels with a route saved by `npm run bot -- --trace`. */
+async function tracedLevelIds() {
+  const files = await readdir(OUT_DIR).catch(() => [])
+  return files.filter((f) => /^route-\d+-\d+\.json$/.test(f)).map((f) => f.replace(/^route-|\.json$/g, ''))
 }
