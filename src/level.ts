@@ -34,6 +34,8 @@ export type LevelData = {
   deathY: number
   shapes: Shape[]
   gusts?: GustData[]
+  /** The gong stands in a frame on a platform, or floats on its own in mid-air. */
+  goalMount?: 'stand' | 'floating'
 }
 
 export type Gust = { min: Vec; max: Vec; force: Vec; cycle?: { period: number; on: number; offset: number } }
@@ -45,7 +47,7 @@ export type Level = {
   polys: Poly[]
   gusts: Gust[]
   start: Vec
-  goal: { pos: Vec; radius: number }
+  goal: { pos: Vec; radius: number; mount: 'stand' | 'floating' }
   deathY: number
 }
 
@@ -65,7 +67,7 @@ export function buildLevel(data: LevelData): Level {
       cycle: cycle && { ...cycle, offset: cycle.offset ?? 0 },
     })),
     start: vec(...data.start),
-    goal: { pos: vec(...data.goal), radius: GOAL_RADIUS },
+    goal: { pos: vec(...data.goal), radius: GOAL_RADIUS, mount: data.goalMount ?? 'stand' },
     deathY: data.deathY,
   }
 }

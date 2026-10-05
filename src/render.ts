@@ -231,7 +231,7 @@ function drawPlayer(ctx: CanvasRenderingContext2D, pos: Vec, vel: Vec, time: num
   }
 }
 
-/** The goal gong in its wooden frame; once struck it swings, shimmers and sends out rings. */
+/** The goal gong, hanging in a wooden frame or floating free; once struck it swings, shimmers and sends out rings. */
 function drawGong(ctx: CanvasRenderingContext2D, level: Level, sim: Sim) {
   const gong = sim.gong ?? restingGong(level.goal.pos, level.goal.radius)
   const { pivot, radius } = gong
@@ -240,18 +240,20 @@ function drawGong(ctx: CanvasRenderingContext2D, level: Level, sim: Sim) {
   const beamY = pivot.y - 6
   const groundY = level.goal.pos.y + radius + 30
 
-  ctx.fillStyle = '#5b3a1e'
-  for (const side of [-1, 1]) ctx.fillRect(pivot.x + side * postX - 4, beamY, 8, groundY - beamY)
-  ctx.fillRect(pivot.x - postX - 10, beamY - 8, postX * 2 + 20, 8)
+  if (level.goal.mount === 'stand') {
+    ctx.fillStyle = '#5b3a1e'
+    for (const side of [-1, 1]) ctx.fillRect(pivot.x + side * postX - 4, beamY, 8, groundY - beamY)
+    ctx.fillRect(pivot.x - postX - 10, beamY - 8, postX * 2 + 20, 8)
 
-  ctx.strokeStyle = '#d8c7a0'
-  ctx.lineWidth = 2
-  ctx.beginPath()
-  for (const side of [-1, 1]) {
-    ctx.moveTo(pivot.x + side * radius * 0.5, beamY)
-    ctx.lineTo(centre.x + side * radius * 0.5, centre.y - radius * 0.85)
+    ctx.strokeStyle = '#d8c7a0'
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    for (const side of [-1, 1]) {
+      ctx.moveTo(pivot.x + side * radius * 0.5, beamY)
+      ctx.lineTo(centre.x + side * radius * 0.5, centre.y - radius * 0.85)
+    }
+    ctx.stroke()
   }
-  ctx.stroke()
 
   const lastHit = gong.hits.at(-1)
   const sinceHit = lastHit === undefined ? 0 : sim.time - lastHit
