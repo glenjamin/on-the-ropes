@@ -222,6 +222,21 @@ describe('swinging on the rope', () => {
     expect(launched.afterGrab).toBeLessThanOrEqual(900 + 1e-6)
   })
 
+  it('brushing the side of a launch ramp, rather than sliding on its top, keeps the usual speed limit', () => {
+    const shape = skiJump({ top: [0, 0], drop: 30, run: 1500, radius: 250, lip: 35, base: 3000, ramp: true })
+    const [lipX, lipY] = 'path' in shape ? shape.path[shape.path.length - 3] : [0, 0]
+    // Falling down the sheer face below the lip, pressed against it
+    const sim = new Sim(buildLevel({ ...flat, start: [lipX + 11, lipY + 200], shapes: [shape] }))
+    let fastest = 0
+    for (let t = 0; t < 1; t += DT) {
+      sim.vel.x = -100
+      sim.step(DT, 0)
+      fastest = Math.max(fastest, Math.hypot(sim.vel.x, sim.vel.y))
+    }
+    expect(sim.pos.x).toBeCloseTo(lipX + 12, 0)
+    expect(fastest).toBeLessThanOrEqual(900 + 1e-6)
+  })
+
   it('grabbing a hanging vine sets it swinging, and the rope moves with it', () => {
     const sim = new Sim(buildLevel({ ...flat, start: [-300, 0], vines: [{ pivot: [0, -600], length: 500, kind: 'green' }] }))
     sim.fire({ x: 300, y: -150 })
@@ -260,16 +275,16 @@ describe('swinging on the rope', () => {
     expect(fixed.fastest).toBeLessThanOrEqual(900 + 1e-6)
   })
 
-  it('a brown vine snaps about a second after it’s grabbed, and can’t be grabbed again until the run restarts', () => {
+  it('a brown vine snaps half a second after it’s grabbed, and can’t be grabbed again until the run restarts', () => {
     const sim = new Sim(buildLevel({ ...flat, start: [-200, 200], vines: [{ pivot: [0, -400], length: 500, kind: 'brown' }] }))
     sim.gravity = 0
     sim.fire({ x: 1, y: -1 })
-    run(sim, 0.8, -200)
-    expect(sim.rope).not.toBeNull()
     run(sim, 0.4, -200)
+    expect(sim.rope).not.toBeNull()
+    run(sim, 0.3, -200)
     expect(sim.rope).toBeNull()
-    expect(sim.vines[0].snapped).toBeGreaterThan(0.9)
-    expect(sim.vines[0].snapped).toBeLessThan(1.2)
+    expect(sim.vines[0].snapped).toBeGreaterThan(0.45)
+    expect(sim.vines[0].snapped).toBeLessThan(0.65)
 
     sim.pos = { x: -200, y: 200 }
     sim.vel = { x: 0, y: 0 }

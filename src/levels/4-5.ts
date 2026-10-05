@@ -32,7 +32,7 @@ export default {
     // Rotten vines across the top to a last green one, which alone can carry you out to the gong
     canopy(4400, 7000, [-1450, -1500, -1550, -1500, -1600, -1550, -1500]),
     clump(6000, -900, 100, 55),
-    { path: [[8500, -660], [8560, -660], [8530, -520]] },
+    { path: [[8420, -660], [8480, -660], [8450, -520]] },
     clump(9000, -1050, 90, 50),
   ],
   vines: [

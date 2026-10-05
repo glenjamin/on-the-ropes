@@ -148,7 +148,7 @@ export function render(ctx: CanvasRenderingContext2D, w: number, h: number, cam:
   else drawIcePuff(ctx, sim)
   drawTrail(ctx, fx.trail, palette)
   if (fx.sinking) drawSinkingPlayer(ctx, fx.sinking, level.theme, time)
-  else drawPlayer(ctx, sim.pos, sim.vel, time)
+  else drawPlayer(ctx, sim.pos, sim.vel, time, sim.launched)
   if (level.theme === 'lava') drawLava(ctx, level, cam, w, h, time)
   else if (level.theme === 'ice') drawWater(ctx, level, cam, w, h, time)
   else if (level.theme === 'jungle') drawRiver(ctx, level, cam, w, h, time)
@@ -273,11 +273,13 @@ function drawTapRings(ctx: CanvasRenderingContext2D, rings: Effects['tapRings'])
 }
 
 /** A round ninja: dark body, eye slit, and a red headband whose tails stream behind faster movement. */
-function drawPlayer(ctx: CanvasRenderingContext2D, pos: Vec, vel: Vec, time: number) {
+/** With `skis`, for riding a ski jump and the flight after it. */
+function drawPlayer(ctx: CanvasRenderingContext2D, pos: Vec, vel: Vec, time: number, skis = false) {
   const { x, y } = pos
   const speed = Math.hypot(vel.x, vel.y)
   const look = norm({ x: vel.x || 1, y: vel.y * 0.5 })
   const facing = look.x >= 0 ? 1 : -1
+  if (skis) drawSkis(ctx, pos, speed > 60 ? norm(vel) : { x: facing, y: 0 })
 
   // Headband tails, drawn first so they sit behind the body
   const knot = { x: x - facing * 9, y: y - 7 }
@@ -776,6 +778,26 @@ function drawRampStripe(ctx: CanvasRenderingContext2D, poly: Poly) {
   })
   ctx.stroke()
   ctx.setLineDash([])
+}
+
+/** A pair of skis under the player, pointing along `dir`, tips turned up at the front. */
+function drawSkis(ctx: CanvasRenderingContext2D, pos: Vec, dir: Vec) {
+  // Whichever side of the direction of travel is further down, so the skis stay underfoot going either way
+  const under = dir.x >= 0 ? { x: -dir.y, y: dir.x } : { x: dir.y, y: -dir.x }
+  ctx.lineCap = 'round'
+  ctx.lineWidth = 4
+  for (const [colour, depth, shift] of [['#c99a1e', RADIUS, -5], ['#ffd23f', RADIUS + 3, 3]] as const) {
+    const mid = { x: pos.x + under.x * depth + dir.x * shift, y: pos.y + under.y * depth + dir.y * shift }
+    const tail = { x: mid.x - dir.x * 22, y: mid.y - dir.y * 22 }
+    const nose = { x: mid.x + dir.x * 18, y: mid.y + dir.y * 18 }
+    const tip = { x: nose.x + dir.x * 6 - under.x * 5, y: nose.y + dir.y * 6 - under.y * 5 }
+    ctx.strokeStyle = colour
+    ctx.beginPath()
+    ctx.moveTo(tail.x, tail.y)
+    ctx.lineTo(nose.x, nose.y)
+    ctx.quadraticCurveTo(nose.x + dir.x * 5, nose.y + dir.y * 5, tip.x, tip.y)
+    ctx.stroke()
+  }
 }
 
 /** A rope's hook on ice shakes more and more as its grip runs out; `held` is the fraction of the grip used. */

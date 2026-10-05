@@ -62,7 +62,7 @@ const VINE_START_LENGTH = 0.9
 /** Furthest a vine swings from hanging straight down, in radians, so it can't loop up over its branch. */
 const VINE_MAX_ANGLE = (80 * Math.PI) / 180
 /** Seconds a brown vine holds before snapping. */
-const VINE_SNAP_SECS = 1
+const VINE_SNAP_SECS = 0.5
 /** A green vine pushes the player along their swing (units/s²), building it up to `VINE_MAX_SPEED`. */
 const VINE_PUMP = 700
 /** The speed limit while on a green vine and in the flight after letting go, until the next catch or touching terrain. */
@@ -374,10 +374,11 @@ export class Sim {
         if (l >= RADIUS) continue
         const n = l > 1e-6 ? scale(d, 1 / l) : poly.edgeNormals[i]
         this.pos = add(c, scale(n, RADIUS))
-        if (poly.ramp) onRamp = true
-        else onOther = true
         const isFloor = n.y < -0.6
         const isCeiling = n.y > 0.6
+        // Only sliding on top of a ramp launches; brushing its sides or underneath neither launches nor lands
+        if (!poly.ramp) onOther = true
+        else if (isFloor) onRamp = true
         const vn = dot(this.vel, n)
         if (vn < 0) {
           const restitution = isFloor ? FLOOR_BOUNCE : isCeiling ? CEILING_BOUNCE : WALL_BOUNCE

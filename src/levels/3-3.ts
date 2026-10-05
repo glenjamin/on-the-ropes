@@ -1,10 +1,10 @@
 import type { LevelData, Shape } from '../level'
 import { skiJump } from './ice'
 
-/** Slim icicles of dark ice hanging edge to edge from `top` down into the water, too close to squeeze between. */
-const icicleCurtain = (fromX: number, count: number, top: number): Shape[] =>
+/** Slim icicles of dark ice hanging from `top` down into the water, `spacing` apart. */
+const icicleCurtain = (fromX: number, count: number, spacing: number, top: number): Shape[] =>
   Array.from({ length: count }, (_, i) => {
-    const x = fromX + i * 55
+    const x = fromX + i * spacing
     return { path: [[x - 20, top], [x + 20, top], [x + 18, 1800], [x, 1900], [x - 18, 1800]], surface: 'dark-ice' }
   })
 
@@ -38,8 +38,8 @@ export default {
     { diamond: [7650, 350, 55] },
     { diamond: [8150, 800, 55] },
 
-    // A low roof over open water, closed off by a curtain of icicles: grab each one to break it off and clear the way
-    ...icicleCurtain(9300, 9, 1350),
-    { path: [[8500, -1600], [11300, -1600], [11300, 1250], [10700, 1300], [10300, 1220], [9900, 1350], [9250, 1350], [9000, 1300], [8750, 1360], [8500, 1280]] },
+    // A tall cavern over open water, hung with a few icicles to swing between
+    ...icicleCurtain(9350, 4, 250, 1000),
+    { path: [[8500, -1600], [11300, -1600], [11300, 900], [10700, 950], [10300, 900], [10160, 1000], [9250, 1000], [9000, 950], [8750, 1010], [8500, 930]] },
   ],
 } satisfies LevelData
