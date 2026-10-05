@@ -43,6 +43,9 @@ export default {
     { diamond: [10700, 650, 45], surface: 'ice' },
     { rect: [10950, 420, 140, 30], surface: 'ice' },
     { diamond: [11350, 350, 50], surface: 'ice' },
+    // A berg below catches a missed or slipped latch: ride up its far side and back, with a moment to grab again
+    // before sliding off into the water
+    { path: [[10750, 1300], [11100, 1320], [11250, 1290], [11350, 1220], [11420, 1120], [11450, 1000], [11490, 1000], [11490, 1380], [10750, 1380]], surface: 'ice' },
 
     // Then rock, and the gong floating beyond among a few shards of ice
     { diamond: [11750, 550, 50] },
