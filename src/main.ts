@@ -9,7 +9,7 @@ const MAX_FRAME = 0.1
 const TRAIL_SECS = 1.8
 /** Touches this close (CSS px) to the sides or bottom are hands gripping the phone, not taps. */
 const GRIP_EDGE_SIDES = 28
-const GRIP_EDGE_BOTTOM = 48
+const GRIP_EDGE_BOTTOM = 16
 /** The camera zooms out by up to this fraction as the player speeds up, so fast flights show more ahead. */
 const SPEED_ZOOM_OUT = 0.13
 /** Speed (game units/s) at which the camera is fully zoomed out. */
