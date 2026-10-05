@@ -23,6 +23,8 @@ const WIN_CARD_DELAY = 1
 /** Best time per level id; a level counts as completed once it has one. */
 const PROGRESS_KEY = 'on-the-ropes:progress'
 const LAST_LEVEL_KEY = 'on-the-ropes:last-level'
+/** While levels are being play-tested every level is open; turn off to unlock each by completing the one before. */
+const UNLOCK_ALL = true
 /** Matches the CSS that covers the game with a rotate prompt; play pauses while it shows. */
 const PORTRAIT_TOUCH = matchMedia('(orientation: portrait) and (pointer: coarse)')
 
@@ -213,7 +215,7 @@ function showMenu() {
     const buttons = set.levels.map((l) => {
       const i = LEVELS.indexOf(l)
       const best = progress[l.id]
-      const locked = i > 0 && progress[LEVELS[i - 1].id] === undefined
+      const locked = !UNLOCK_ALL && i > 0 && progress[LEVELS[i - 1].id] === undefined
       return `<button class="level-btn" data-level="${i}" ${locked ? 'disabled' : ''}>
         <strong>${l.id}</strong><span>${l.name}</span><small>${locked ? 'Locked' : best === undefined ? '—' : `${best.toFixed(2)}s`}</small>
       </button>`
