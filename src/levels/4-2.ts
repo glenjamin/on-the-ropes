@@ -18,7 +18,6 @@ export default {
     { rect: [7000, 660, 550, 840] },
 
     canopy(0, 1450, [160, 230, 130, 240, 170]),
-    branch([1450, 300], [1150, 380], 50),
 
     // Brown vines snap a second after you grab them: keep moving, and rest on the green one in the middle
     canopy(1450, 3250, [-560, -620, -600, -650, -560]),
