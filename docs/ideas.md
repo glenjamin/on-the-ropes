@@ -3,10 +3,10 @@
 ## Open
 
 - A stricter bot mode as a difficulty score: no lookahead, picks the best-looking next move from what's on screen, every move wobbled, and reports the share of runs that reach the gong. The current bot overstates how easy a level is
-
-## Next: the ice set
-
-- Set 3 is ice. The idea it came from is surfaces the rope can't grab, which teaches choosing anchors; confirm the mechanic before building
+- Ice (set 3) has had a first play-test; 3-1, 3-3 and 3-5 have changed since and are unplayed. Things to try: the grip times on ice and dark ice (`GRIP_SECS` in `src/sim.ts`), the ice-floor friction and glide (`ICE_FRICTION`, `ICE_GLIDE`), and the 3-5 launch (`RAMP_BOOST`, `LAUNCH_MAX_SPEED`)
+- At launch speeds the camera trails the player by several hundred units, since it follows with a fixed lag; it may need to catch up faster during a launch
+- The bot treats ice and dark ice like rock when picking targets and finds out by simulating; a person can see the colours, so it may undervalue or waste taps on them
+- Only the piece the rope first caught decides the grip; a rope wrapped round an ice corner still holds as the first surface does
 
 ## Ideas for later sets
 

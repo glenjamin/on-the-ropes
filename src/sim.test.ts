@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { dist, pointInPolygon, segmentHit, type Vec } from './geom'
 import { gongCentre } from './gong'
-import { buildLevel, type Level, type LevelData } from './level'
+import { buildLevel, type Level, type LevelData, type Surface } from './level'
 import lavaCave from './levels/1-2'
+import { skiJump } from './levels/ice'
 import { GONG_CORD_LENGTH, Sim } from './sim'
 
 const DT = 1 / 240
@@ -135,6 +136,92 @@ describe('swinging on the rope', () => {
     expect(bursts.vel.x).toBe(afterBurst)
   })
 
+  it('the rope slips off ice after a moment, leaving a puff where it let go, but holds on rock', () => {
+    const rock = hangUnder('rock')
+    run(rock, 3, -200)
+    expect(rock.rope).not.toBeNull()
+    expect(rock.slip).toBeNull()
+
+    const ice = hangUnder('ice')
+    run(ice, 0.15, -200)
+    expect(ice.rope).not.toBeNull()
+    run(ice, 0.25, -200)
+    expect(ice.rope).toBeNull()
+    expect(ice.slip!.time).toBeGreaterThan(0.15)
+    expect(ice.slip!.time).toBeLessThan(0.4)
+    expect(Math.abs(ice.slip!.at.y + 300)).toBeLessThan(5)
+  })
+
+  it('dark ice lets go of the rope almost at once, much sooner than ordinary ice', () => {
+    const slipsAfter = (surface: Surface) => {
+      const sim = hangUnder(surface)
+      run(sim, 1, -200)
+      return sim.slip!.time
+    }
+    expect(slipsAfter('dark-ice')).toBeLessThan(0.15)
+    expect(slipsAfter('dark-ice')).toBeLessThan(slipsAfter('ice') - 0.1)
+  })
+
+  it('a grabbed icicle drops the rope and breaks off, so it can’t be grabbed again until the run restarts', () => {
+    const level = buildLevel({ ...flat, shapes: [{ path: [[-40, -300], [40, -300], [0, -150]], surface: 'dark-ice' }] })
+    const sim = new Sim(level)
+    sim.gravity = 0
+    sim.fire({ x: 0, y: -1 })
+    run(sim, 0.3, -200)
+    expect(sim.slip).not.toBeNull()
+    expect(sim.rope).toBeNull()
+
+    sim.fire({ x: 0, y: -1 })
+    run(sim, 0.3, -200)
+    expect(sim.rope).toBeNull()
+    expect(sim.slip!.time).toBeLessThan(0.3)
+
+    sim.reset()
+    sim.gravity = 0
+    sim.fire({ x: 0, y: -1 })
+    run(sim, 0.05, -200)
+    expect(sim.rope).not.toBeNull()
+  })
+
+  it('slides further and faster on an icy floor than on rock', () => {
+    const slideOn = (surface: Surface) => {
+      const sim = new Sim(buildLevel({ ...flat, start: [0, -12], shapes: [{ rect: [-500, 0, 5000, 100], surface }] }))
+      sim.vel = { x: 300, y: 0 }
+      run(sim, 1.5, 0)
+      return sim.vel.x
+    }
+    expect(slideOn('rock')).toBeLessThan(300)
+    expect(slideOn('ice')).toBeGreaterThan(300)
+  })
+
+  it('a launch ramp lets the player fly past the usual speed limit until the next rope catches', () => {
+    const top: [number, number] = [0, 0]
+    const jump = { top, drop: 30, run: 1500, radius: 250, lip: 35, base: 3000 }
+    const fastestAfterLaunch = (ramp: boolean) => {
+      const shape = skiJump({ ...jump, ramp })
+      const [lipX, lipY] = 'path' in shape ? shape.path[shape.path.length - 3] : [0, 0]
+      const sim = new Sim(buildLevel({ ...flat, start: [10, -20], shapes: [shape, { rect: [lipX - 500, lipY - 800, 5000, 100] }] }))
+      while (sim.pos.x < lipX) sim.step(DT, 0)
+      let fastest = 0
+      for (let t = 0; t < 0.15; t += DT) {
+        sim.step(DT, 0)
+        fastest = Math.max(fastest, Math.hypot(sim.vel.x, sim.vel.y))
+      }
+      sim.fire({ x: 0, y: -1 })
+      while (!sim.rope) sim.step(DT, 0)
+      let afterGrab = 0
+      for (let t = 0; t < 0.5; t += DT) {
+        sim.step(DT, -200)
+        afterGrab = Math.max(afterGrab, Math.hypot(sim.vel.x, sim.vel.y))
+      }
+      return { fastest, afterGrab }
+    }
+    expect(fastestAfterLaunch(false).fastest).toBeLessThanOrEqual(900 + 1e-6)
+    const launched = fastestAfterLaunch(true)
+    expect(launched.fastest).toBeGreaterThan(1100)
+    expect(launched.afterGrab).toBeLessThanOrEqual(900 + 1e-6)
+  })
+
   it('striking the gong bounces the player off it once, swings it, and keeps them caught on a short cord', () => {
     const level = buildLevel(lavaCave)
     const sim = new Sim(level)
@@ -180,6 +267,16 @@ describe('swinging on the rope', () => {
     expect(stats.unbends).toBeGreaterThan(0)
   })
 })
+
+/** An empty level to build test terrain into. */
+const flat: LevelData = { id: 't', name: 't', theme: 'ice', start: [0, 0], goal: [9000, 0], deathY: 1e6, shapes: [] }
+
+/** A player hooked straight up onto a ceiling of the given surface. */
+function hangUnder(surface: Surface): Sim {
+  const sim = new Sim(buildLevel({ ...flat, shapes: [{ rect: [-500, -400, 1000, 100], surface }] }))
+  sim.fire({ x: 0, y: -1 })
+  return sim
+}
 
 /** Fires at random upward angles, reeling in for a while then letting go, like an eager player. */
 function randomPlay(attempts: number) {

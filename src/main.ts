@@ -1,5 +1,5 @@
 import { add, dist, len, scale, sub, type Vec } from './geom'
-import { buildLevel, type Level } from './level'
+import { buildLevel, type Level, type Theme } from './level'
 import { LEVELS, SETS } from './levels'
 import { cameraFocus, render, TAP_RING_SECS, zoomFor, type Camera } from './render'
 import { playStep, SUBSTEP, TIME_SCALE } from './pace'
@@ -20,6 +20,13 @@ const RESPAWN_DELAY = 2
 const PLUMMET_GRAVITY = 4000
 /** Pause after striking the gong before the result card appears, so the impact is seen. */
 const WIN_CARD_DELAY = 1
+/** What each theme's fall says, and whether the player sinks where they land or plummets out of sight. */
+const DEATHS: Record<Theme, { message: string; sinks: boolean }> = {
+  lava: { message: 'Toasted', sinks: true },
+  clouds: { message: 'Lost in the clouds', sinks: false },
+  ice: { message: 'Frozen solid', sinks: true },
+  jungle: { message: 'Swept downriver', sinks: true },
+}
 /** Best time per level id; a level counts as completed once it has one. */
 const PROGRESS_KEY = 'on-the-ropes:progress'
 const LAST_LEVEL_KEY = 'on-the-ropes:last-level'
@@ -59,8 +66,8 @@ let running = false
 let clock = 0
 /** The result card, waiting to be shown once the gong has had its moment. */
 let pendingWinCard: string | null = null
-/** Where the player fell into lava, for the splash and sinking animation. */
-let lavaDeathAt: Vec | null = null
+/** Where the player fell into lava or water, for the splash and sinking animation. */
+let sunkAt: Vec | null = null
 let accumulator = 0
 
 /** Recent player positions, oldest first, for the motion trail. */
@@ -123,11 +130,9 @@ function frame(now: number) {
       pendingWinCard = null
     }
   } else if (phase === 'dead') {
-    // Falling into lava stops where it lands; falling out of the sky plummets away into the fog
-    if (level.theme !== 'lava') plummet(dt)
-    if (phaseTime > DEATH_CARD_DELAY && !overlay.classList.contains('show')) {
-      showOverlay(level.theme === 'lava' ? '<h1>Toasted</h1>' : '<h1>Lost in the clouds</h1>')
-    }
+    const death = DEATHS[level.theme]
+    if (!death.sinks) plummet(dt)
+    if (phaseTime > DEATH_CARD_DELAY && !overlay.classList.contains('show')) showOverlay(`<h1>${death.message}</h1>`)
     if (phaseTime > RESPAWN_DELAY) respawn()
   }
 
@@ -138,7 +143,7 @@ function frame(now: number) {
   const fx = {
     trail: trail.map((s) => s.p),
     tapRings: tapRings.map((r) => ({ at: r.at, age: t - r.t })),
-    lavaDeath: lavaDeathAt ? { at: lavaDeathAt, age: phaseTime } : undefined,
+    sinking: sunkAt ? { at: sunkAt, age: phaseTime } : undefined,
   }
   render(ctx, canvas.width / devicePixelRatio, canvas.height / devicePixelRatio, cam, level, sim, fx, t)
   timeEl.textContent = runTime.toFixed(2)
@@ -157,13 +162,13 @@ function die() {
   phase = 'dead'
   phaseTime = 0
   sim.release()
-  if (level.theme === 'lava') lavaDeathAt = { x: sim.pos.x, y: level.deathY - RADIUS }
+  if (DEATHS[level.theme].sinks) sunkAt = { x: sim.pos.x, y: level.deathY - RADIUS }
 }
 
 function respawn() {
   sim.reset()
   pendingWinCard = null
-  lavaDeathAt = null
+  sunkAt = null
   trail.length = 0
   phase = 'play'
   phaseTime = 0

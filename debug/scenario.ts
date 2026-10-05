@@ -1,7 +1,7 @@
 // Renders one frame of a scripted run so the game can be inspected in a known state.
 // Query params: ang (fire angle in radians, omit to stay put), reel (rope speed once attached; negative reels in),
 // secs (max seconds to simulate), until=bend (stop as soon as the rope bends round a corner),
-// level (id, default 1-2), overview (show the whole level instead of following the player),
+// level (id, default 1-2), at (x,y to start the player from instead of the level start), overview (show the whole level instead of following the player),
 // route (draw the bot's saved route for the level over it; see `npm run bot -- --trace`).
 import type { Trace } from '../src/bot'
 import type { Vec } from '../src/geom'
@@ -22,6 +22,8 @@ const levelData = LEVELS.find((l) => l.id === (params.get('level') ?? '1-2'))
 if (!levelData) throw new Error(`unknown level ${params.get('level')}`)
 const level = buildLevel(levelData)
 const sim = new Sim(level)
+const at = params.get('at')?.split(',').map(Number)
+if (at) sim.pos = { x: at[0], y: at[1] }
 if (angle !== null) sim.fire({ x: Math.cos(Number(angle)), y: Math.sin(Number(angle)) })
 const trail: { p: { x: number; y: number }; t: number }[] = []
 let t = 0

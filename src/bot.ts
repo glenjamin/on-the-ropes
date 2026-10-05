@@ -1,9 +1,9 @@
-// A bot that plays levels the way a person could: it taps points on terrain it can see, with human reaction
+// A bot that plays levels the way a person could: it taps points on terrain and vines it can see, with human reaction
 // gaps and coarse timing, and searches for a route by keeping a few promising positions after each move.
-import { add, dist, dot, norm, sub, type Vec } from './geom'
+import { add, dist, dot, norm, scale, sub, type Vec } from './geom'
 import type { Level } from './level'
 import { playStep, SUBSTEP, TIME_SCALE } from './pace'
-import { HOOK_RANGE, RADIUS, Sim } from './sim'
+import { HOOK_RANGE, RADIUS, Sim, vinePoint } from './sim'
 
 /** One tap to fire at `target`, a tap to let go after `hold`, then `fly` before the next tap. Real seconds. */
 export type Move = { target: Vec; hold: number; fly: number }
@@ -24,6 +24,10 @@ const FLIES = [0.15, 0.35, 0.6]
 const TARGETS_PER_MOVE = 6
 const BEAM_WIDTH = 8
 const MAX_MOVES = 60
+/** How much breaking off a piece of ice is worth, in units of distance to the gong. */
+const BREAK_BONUS = 120
+/** How far apart along a vine the bot considers tapping. */
+const VINE_SPACING = 90
 /** Roughly what's on screen around the player in landscape, given the camera framing. */
 const VIEW = { side: 680, above: 480, below: 170 }
 
@@ -128,37 +132,50 @@ function advance(sim: Sim, level: Level, seconds: number, onStep?: (sim: Sim) =>
   return 'playing'
 }
 
-/** Points on visible terrain within the rope's reach, favouring ones towards the gong and above the player. */
+/**
+ * Points on visible terrain and vines within the rope's reach, favouring ones towards the gong and above the player.
+ * Vines are aimed at where they hang right now, as a person would tap them.
+ */
 function targetsInView(sim: Sim, level: Level): Vec[] {
   const { pos } = sim
   const towardGoal = norm(sub(level.goal.pos, pos))
   const candidates: { p: Vec; appeal: number }[] = []
-  for (const poly of level.polys) {
+  const consider = (p: Vec) => {
+    const d = sub(p, pos)
+    if (Math.abs(d.x) > VIEW.side || d.y < -VIEW.above || d.y > VIEW.below || dist(p, pos) > HOOK_RANGE) return
+    candidates.push({ p, appeal: dot(norm(d), towardGoal) + (d.y < 0 ? 0.4 : 0) })
+  }
+  for (const poly of sim.solidPolys()) {
     poly.pts.forEach((a, i) => {
       const b = poly.pts[(i + 1) % poly.pts.length]
       const steps = Math.max(1, Math.ceil(dist(a, b) / 70))
-      for (let s = 0; s < steps; s++) {
-        const p = add(a, { x: ((b.x - a.x) * s) / steps, y: ((b.y - a.y) * s) / steps })
-        const d = sub(p, pos)
-        if (Math.abs(d.x) > VIEW.side || d.y < -VIEW.above || d.y > VIEW.below || dist(p, pos) > HOOK_RANGE) continue
-        candidates.push({ p, appeal: dot(norm(d), towardGoal) + (d.y < 0 ? 0.4 : 0) })
-      }
+      for (let s = 0; s < steps; s++) consider(add(a, { x: ((b.x - a.x) * s) / steps, y: ((b.y - a.y) * s) / steps }))
     })
   }
+  level.vines.forEach((vine, i) => {
+    const { angle, snapped } = sim.vines[i]
+    if (snapped !== null) return
+    for (let along = vine.length; along > 60; along -= VINE_SPACING) consider(vinePoint(vine, angle, along))
+  })
   candidates.sort((x, y) => y.appeal - x.appeal)
   const chosen: Vec[] = []
   for (const { p } of candidates) {
     if (chosen.length === TARGETS_PER_MOVE) break
     if (chosen.every((c) => dist(c, p) > 150)) chosen.push(p)
   }
+  // With nothing in reach, as in a long flight, tap ahead at nothing to wait it out
+  if (!chosen.length) chosen.push(add(pos, scale(norm(sim.vel), HOOK_RANGE)))
   return chosen
 }
 
-/** Closer to the gong (allowing for where momentum is taking the player) is better; skimming the death line is not. */
+/**
+ * Closer to the gong (allowing for where momentum is taking the player) is better; skimming the death line is not.
+ * Breaking ice off counts for a little, since it may be clearing the way.
+ */
 function progress(sim: Sim, level: Level): number {
   const heading = add(sim.pos, { x: sim.vel.x * 0.3, y: sim.vel.y * 0.3 })
   const danger = sim.pos.y > level.deathY - 250 ? 300 : 0
-  return -dist(heading, level.goal.pos) - danger
+  return -dist(heading, level.goal.pos) - danger + BREAK_BONUS * sim.broken.length
 }
 
 /** The best few positions, at most one per patch of the level so the search doesn't crowd into one spot. */

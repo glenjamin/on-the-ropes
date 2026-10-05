@@ -6,12 +6,32 @@ export type Poly = {
   edgeNormals: Vec[]
   /** Convex corners the rope can bend around, and the point just outside each where it rests. */
   corners: { at: Vec; wrap: Vec }[]
+  surface: Surface
+  ramp: boolean
+  foliage: boolean
 }
 
-/** Terrain pieces as plain data: an axis-aligned box, a square turned on its corner, or any polygon. */
-export type Shape = { rect: [x: number, y: number, w: number, h: number] } | { diamond: [cx: number, cy: number, r: number] } | { path: [number, number][] }
+/** Ice is slippery underfoot and the rope only holds on it briefly; dark ice lets go of the rope almost at once. */
+export type Surface = 'rock' | 'ice' | 'dark-ice'
 
-export type Theme = 'lava' | 'clouds'
+/** Terrain pieces as plain data: an axis-aligned box, a square turned on its corner, or any polygon; rock unless said otherwise. */
+export type Shape = ({ rect: [x: number, y: number, w: number, h: number] } | { diamond: [cx: number, cy: number, r: number] } | { path: [number, number][] }) & {
+  surface?: Surface
+  /** A launch ramp: sliding on it lifts the speed limit, so a ski jump can really fly. */
+  ramp?: boolean
+  /** Drawn as leaves rather than wood or rock; it holds the rope just the same. */
+  foliage?: boolean
+}
+
+export type Theme = 'lava' | 'clouds' | 'ice' | 'jungle'
+
+/** Green vines hold and swing you harder; brown vines snap soon after you grab them. */
+export type VineKind = 'green' | 'brown'
+
+/** A vine hanging `length` down from a fixed `pivot`, optionally already swaying `angle` degrees from straight down. */
+export type VineData = { pivot: [number, number]; length: number; kind: VineKind; angle?: number }
+
+export type Vine = { pivot: Vec; length: number; kind: VineKind; angle: number }
 
 /**
  * A region of wind that pushes the player while they're inside it, with `force` as an acceleration in units/s².
@@ -30,12 +50,17 @@ export type LevelData = {
   theme: Theme
   start: [number, number]
   goal: [number, number]
-  /** Falling below this ends the run: into lava, or out of the sky. */
+  /** Falling below this ends the run: into lava or icy water, or out of the sky. */
   deathY: number
   shapes: Shape[]
   gusts?: GustData[]
   /** The gong stands in a frame on a platform, or floats on its own in mid-air. */
   goalMount?: 'stand' | 'floating'
+  /** Flags planted at these points on the ground, marking a spot such as where to land to make a jump. */
+  flags?: [number, number][]
+  vines?: VineData[]
+  /** Tree trunks drawn behind everything, which the player and rope pass through: centre x, top, and width. */
+  trunks?: [x: number, top: number, width: number][]
 }
 
 export type Gust = { min: Vec; max: Vec; force: Vec; cycle?: { period: number; on: number; offset: number } }
@@ -49,6 +74,9 @@ export type Level = {
   start: Vec
   goal: { pos: Vec; radius: number; mount: 'stand' | 'floating' }
   deathY: number
+  flags: Vec[]
+  vines: Vine[]
+  trunks: { x: number; top: number; width: number }[]
 }
 
 /** The goal gong's disc radius. */
@@ -59,7 +87,7 @@ export function buildLevel(data: LevelData): Level {
     id: data.id,
     name: data.name,
     theme: data.theme,
-    polys: data.shapes.map((s) => makePoly(shapePoints(s))),
+    polys: data.shapes.map((s) => makePoly(shapePoints(s), s.surface ?? 'rock', s.ramp ?? false, s.foliage ?? false)),
     gusts: (data.gusts ?? []).map(({ rect: [x, y, w, h], force, cycle }) => ({
       min: vec(x, y),
       max: vec(x + w, y + h),
@@ -69,6 +97,9 @@ export function buildLevel(data: LevelData): Level {
     start: vec(...data.start),
     goal: { pos: vec(...data.goal), radius: GOAL_RADIUS, mount: data.goalMount ?? 'stand' },
     deathY: data.deathY,
+    flags: (data.flags ?? []).map(([x, y]) => vec(x, y)),
+    vines: (data.vines ?? []).map(({ pivot, length, kind, angle }) => ({ pivot: vec(...pivot), length, kind, angle: ((angle ?? 0) * Math.PI) / 180 })),
+    trunks: (data.trunks ?? []).map(([x, top, width]) => ({ x, top, width })),
   }
 }
 
@@ -76,7 +107,7 @@ export function buildLevel(data: LevelData): Level {
 const WRAP_OFFSET = 2.5
 const MAX_MITER = 4
 
-function makePoly(pts: Vec[]): Poly {
+function makePoly(pts: Vec[], surface: Surface, ramp: boolean, foliage: boolean): Poly {
   const edgeNormals = pts.map((a, i) => {
     const b = pts[(i + 1) % pts.length]
     const n = norm(perp(sub(b, a)))
@@ -91,7 +122,7 @@ function makePoly(pts: Vec[]): Poly {
     const out = add(p, scale(add(prevN, nextN), (WRAP_OFFSET * miter) / 2))
     if (!pointInPolygon(out, pts)) corners.push({ at: p, wrap: out })
   })
-  return { pts, edgeNormals, corners }
+  return { pts, edgeNormals, corners, surface, ramp, foliage }
 }
 
 function shapePoints(shape: Shape): Vec[] {

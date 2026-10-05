@@ -1,19 +1,42 @@
 import { norm, type Vec } from './geom'
 import { gongCentre, restingGong } from './gong'
-import { gustStrength, type Level, type Theme } from './level'
-import { GONG_CORD_LENGTH, RADIUS, type Sim } from './sim'
+import { gustStrength, type Level, type Poly, type Surface, type Theme, type Vine, type VineKind } from './level'
+import { GONG_CORD_LENGTH, RADIUS, vinePoint, type Sim } from './sim'
 
 export type Camera = { pos: Vec; zoom: number }
 /** Transient visuals: the player's recent path (oldest first) and rings where the screen was tapped. */
 export type Effects = {
   trail: Vec[]
   tapRings: { at: Vec; age: number }[]
-  /** Set after falling into lava: where it happened and seconds since. */
-  lavaDeath?: { at: Vec; age: number }
+  /** Set after falling into lava or icy water: where it happened and seconds since. */
+  sinking?: { at: Vec; age: number }
 }
 
 export const TAP_RING_SECS = 0.4
 const RING_OUT_SECS = 1.2
+const ICE_PUFF_SECS = 0.8
+/** How long a broken piece of ice is drawn falling away, and how fast it falls. */
+const BREAK_FALL_SECS = 1.5
+const BREAK_FALL_GRAVITY = 1600
+/** Colours (as "r, g, b") of the ripple, spray and mist where the player falls into water. */
+type SplashLook = { ripple: string; spray: string; mist: string }
+const SPLASHES: Record<'ice' | 'jungle', SplashLook> = {
+  ice: { ripple: '235, 250, 255', spray: '225, 245, 255', mist: '240, 250, 255' },
+  jungle: { ripple: '210, 235, 200', spray: '175, 215, 165', mist: '215, 235, 205' },
+}
+const FOLIAGE = { fill: '#2f7a2c', stroke: '#16461a' }
+const VINE_LOOKS: Record<VineKind, { stem: string; leaf: string }> = {
+  green: { stem: '#3f9a2f', leaf: '#74d24e' },
+  brown: { stem: '#7a5230', leaf: '#b08040' },
+}
+/** How long a snapped vine is drawn falling away, and the burst of leaves where it tore free. */
+const VINE_FALL_SECS = 1.5
+const VINE_SNAP_BURST_SECS = 0.7
+const ICE_LOOKS: Record<Surface, { fill: string; stroke: string; sheen: string } | null> = {
+  rock: null,
+  ice: { fill: '#b2e6ff', stroke: '#f4fcff', sheen: 'rgba(255, 255, 255, 0.55)' },
+  'dark-ice': { fill: '#1e5096', stroke: '#8fd0f5', sheen: 'rgba(160, 215, 255, 0.4)' },
+}
 
 type Rgb = [number, number, number]
 type Palette = {
@@ -21,6 +44,9 @@ type Palette = {
   terrainFill: string
   terrainStroke: string
   stars: boolean
+  snow: boolean
+  /** Snow or moss along the tops of terrain. */
+  caps: string | null
   rope: string
   /** Trail colour at the player, fading to `trailFar` at its tail. */
   trailNear: Rgb
@@ -33,6 +59,8 @@ const PALETTES: Record<Theme, Palette> = {
     terrainFill: '#3a2d4f',
     terrainStroke: '#8c74b8',
     stars: true,
+    snow: false,
+    caps: null,
     rope: '#e8c78a',
     trailNear: [255, 255, 255],
     trailFar: [80, 220, 255],
@@ -42,9 +70,33 @@ const PALETTES: Record<Theme, Palette> = {
     terrainFill: '#f8faff',
     terrainStroke: '#b4c8e8',
     stars: false,
+    snow: false,
+    caps: null,
     rope: '#8a5a32',
     trailNear: [255, 120, 170],
     trailFar: [120, 150, 255],
+  },
+  ice: {
+    sky: ['#0d1f3c', '#2f5f8f', '#b5dcf0'],
+    terrainFill: '#3d4859',
+    terrainStroke: '#7f8ea6',
+    stars: false,
+    snow: true,
+    caps: '#f2f8ff',
+    rope: '#d9a066',
+    trailNear: [255, 255, 255],
+    trailFar: [255, 170, 90],
+  },
+  jungle: {
+    sky: ['#0f2a1c', '#2d5a32', '#7fae5a'],
+    terrainFill: '#5a3d26',
+    terrainStroke: '#2e1d10',
+    stars: false,
+    snow: false,
+    caps: '#6cb83f',
+    rope: '#f0d9a0',
+    trailNear: [255, 250, 200],
+    trailFar: [255, 140, 60],
   },
 }
 
@@ -52,6 +104,19 @@ const STARS = Array.from({ length: 140 }, (_, i) => ({
   x: hash(i * 3.1) * 4000,
   y: hash(i * 7.7) * 1600 - 900,
   r: 0.6 + hash(i * 1.3) * 1.4,
+}))
+
+const DAPPLES = Array.from({ length: 70 }, (_, i) => ({
+  x: hash(i * 4.7) * 3000,
+  y: hash(i * 6.3) * 2000,
+  r: 6 + hash(i * 2.2) * 18,
+}))
+
+const SNOW = Array.from({ length: 160 }, (_, i) => ({
+  x: hash(i * 5.3) * 3000,
+  y: hash(i * 2.9) * 2000,
+  r: 1 + hash(i * 8.1) * 2,
+  fall: 25 + hash(i * 3.7) * 45,
 }))
 
 export function render(ctx: CanvasRenderingContext2D, w: number, h: number, cam: Camera, level: Level, sim: Sim, fx: Effects, time: number) {
@@ -68,18 +133,28 @@ export function render(ctx: CanvasRenderingContext2D, w: number, h: number, cam:
   ctx.scale(cam.zoom, cam.zoom)
 
   if (palette.stars) drawStars(ctx, cam, w, h)
+  if (palette.snow) drawSnow(ctx, cam, w, h, time)
+  if (level.theme === 'jungle') drawCanopyLight(ctx, cam, w, h, time)
   ctx.translate(-cam.pos.x, -cam.pos.y)
 
   drawGusts(ctx, level, sim.time)
+  for (const trunk of level.trunks) drawTrunk(ctx, trunk, level)
   drawGong(ctx, level, sim)
-  drawTerrain(ctx, level, palette)
+  drawVines(ctx, level, sim)
+  drawTerrain(ctx, level, sim, palette)
+  drawVineSnaps(ctx, level, sim)
+  for (const flag of level.flags) drawFlag(ctx, flag, time)
   drawRope(ctx, sim, palette)
+  drawIcePuff(ctx, sim)
   drawTrail(ctx, fx.trail, palette)
-  if (fx.lavaDeath) drawSinkingPlayer(ctx, fx.lavaDeath, time)
+  if (fx.sinking) drawSinkingPlayer(ctx, fx.sinking, level.theme, time)
   else drawPlayer(ctx, sim.pos, sim.vel, time)
   if (level.theme === 'lava') drawLava(ctx, level, cam, w, h, time)
+  else if (level.theme === 'ice') drawWater(ctx, level, cam, w, h, time)
+  else if (level.theme === 'jungle') drawRiver(ctx, level, cam, w, h, time)
   else drawFog(ctx, level, cam, w, h)
-  if (fx.lavaDeath) drawSplash(ctx, fx.lavaDeath, level)
+  if (fx.sinking && level.theme === 'lava') drawSplash(ctx, fx.sinking, level)
+  if (fx.sinking && level.theme !== 'lava' && level.theme !== 'clouds') drawWaterSplash(ctx, fx.sinking, level, SPLASHES[level.theme])
   drawTapRings(ctx, fx.tapRings)
 
   ctx.restore()
@@ -113,18 +188,41 @@ function drawStars(ctx: CanvasRenderingContext2D, cam: Camera, w: number, h: num
   }
 }
 
-function drawTerrain(ctx: CanvasRenderingContext2D, level: Level, palette: Palette) {
-  ctx.fillStyle = palette.terrainFill
-  ctx.strokeStyle = palette.terrainStroke
+/**
+ * Rock in the theme's colours, capped with snow in snowy themes; ice is glassy so it reads apart from rock, and dark ice
+ * a deeper blue; launch ramps are striped. Pieces that have broken off tumble away and fade.
+ */
+function drawTerrain(ctx: CanvasRenderingContext2D, level: Level, sim: Sim, palette: Palette) {
   ctx.lineWidth = 3
   ctx.lineJoin = 'round'
-  for (const poly of level.polys) {
+  level.polys.forEach((poly, index) => {
+    const broke = sim.broken.find((b) => b.poly === index)
+    const fallen = broke ? sim.time - broke.time : 0
+    if (fallen > BREAK_FALL_SECS) return
+    ctx.save()
+    if (broke) {
+      const xs = poly.pts.map((p) => p.x)
+      const pivot = { x: (Math.min(...xs) + Math.max(...xs)) / 2, y: poly.pts[0].y }
+      ctx.globalAlpha = 1 - fallen / BREAK_FALL_SECS
+      ctx.translate(pivot.x, pivot.y + 0.5 * BREAK_FALL_GRAVITY * fallen * fallen)
+      ctx.rotate(fallen * (hash(index) - 0.5) * 3)
+      ctx.translate(-pivot.x, -pivot.y)
+    }
     ctx.beginPath()
     poly.pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)))
     ctx.closePath()
+    const ice = ICE_LOOKS[poly.surface]
+    const look = ice ?? (poly.foliage ? FOLIAGE : null)
+    ctx.fillStyle = look?.fill ?? palette.terrainFill
+    ctx.strokeStyle = look?.stroke ?? palette.terrainStroke
     ctx.fill()
     ctx.stroke()
-  }
+    if (ice) drawIceSheen(ctx, poly, ice.sheen)
+    else if (poly.foliage) drawLeafDapples(ctx, poly)
+    else if (palette.caps) drawCaps(ctx, poly, palette.caps)
+    if (poly.ramp) drawRampStripe(ctx, poly)
+    ctx.restore()
+  })
 }
 
 function drawRope(ctx: CanvasRenderingContext2D, sim: Sim, palette: Palette) {
@@ -138,7 +236,7 @@ function drawRope(ctx: CanvasRenderingContext2D, sim: Sim, palette: Palette) {
     for (const a of anchors.slice(1)) ctx.lineTo(a.p.x, a.p.y)
     ctx.lineTo(sim.pos.x, sim.pos.y)
     ctx.stroke()
-    drawHookHead(ctx, anchors[0].p)
+    drawHookHead(ctx, sim.rope.grip === null ? anchors[0].p : slippingHook(anchors[0].p, sim.rope.age / sim.rope.grip))
   } else if (sim.hook) {
     ctx.beginPath()
     ctx.moveTo(sim.pos.x, sim.pos.y)
@@ -313,6 +411,39 @@ function drawLava(ctx: CanvasRenderingContext2D, level: Level, cam: Camera, w: n
   ctx.fill()
 }
 
+/** For icy levels: freezing water with ice floes bobbing on it. */
+function drawWater(ctx: CanvasRenderingContext2D, level: Level, cam: Camera, w: number, h: number, time: number) {
+  const left = cam.pos.x - w / 2 / cam.zoom - 20
+  const right = cam.pos.x + w / 2 / cam.zoom + 20
+  const bottom = cam.pos.y + h / 2 / cam.zoom + 20
+  if (bottom < level.deathY - 20) return
+
+  const surface = (x: number) => level.deathY + Math.sin(x * 0.012 + time * 1.2) * 4 + Math.sin(x * 0.031 - time * 0.9) * 2
+  const grad = ctx.createLinearGradient(0, level.deathY - 10, 0, level.deathY + 220)
+  grad.addColorStop(0, '#d8f3ff')
+  grad.addColorStop(0.08, '#3f8fbf')
+  grad.addColorStop(1, '#0b2a48')
+  ctx.fillStyle = grad
+  ctx.beginPath()
+  ctx.moveTo(left, Math.max(bottom, level.deathY + 40))
+  const step = 24
+  for (let x = Math.floor(left / step) * step; x <= right + step; x += step) ctx.lineTo(x, surface(x))
+  ctx.lineTo(right + step, Math.max(bottom, level.deathY + 40))
+  ctx.closePath()
+  ctx.fill()
+
+  const spacing = 260
+  ctx.fillStyle = 'rgba(240, 250, 255, 0.9)'
+  for (let i = Math.floor(left / spacing); i * spacing < right; i++) {
+    if (hash(i * 1.7) < 0.45) continue
+    const x = i * spacing + hash(i * 4.1) * spacing * 0.6
+    const floeW = 30 + hash(i * 2.3) * 60
+    ctx.beginPath()
+    ctx.ellipse(x, surface(x) + 2, floeW / 2, 5, 0, 0, Math.PI * 2)
+    ctx.fill()
+  }
+}
+
 /** Sits at the top-middle of the screen pointing from the player towards the goal, while the goal is off screen. */
 function drawGoalArrow(ctx: CanvasRenderingContext2D, w: number, h: number, cam: Camera, level: Level, sim: Sim, time: number) {
   const toScreen = (p: Vec) => ({ x: (p.x - cam.pos.x) * cam.zoom + w / 2, y: (p.y - cam.pos.y) * cam.zoom + h / 2 })
@@ -392,8 +523,27 @@ function drawFog(ctx: CanvasRenderingContext2D, level: Level, cam: Camera, w: nu
   ctx.fillRect(left, top, right - left, Math.max(bottom, level.deathY + 60) - top)
 }
 
-/** The ninja slowly sinking into the lava where they fell, charring as they go. */
-function drawSinkingPlayer(ctx: CanvasRenderingContext2D, { at, age }: NonNullable<Effects['lavaDeath']>, time: number) {
+/** The ninja sinking where they fell: charring in lava, freezing into a block of ice that bobs half under, or swept downriver. */
+function drawSinkingPlayer(ctx: CanvasRenderingContext2D, { at, age }: NonNullable<Effects['sinking']>, theme: Theme, time: number) {
+  if (theme === 'jungle') {
+    // Carried off downstream as they go under
+    drawPlayer(ctx, { x: at.x + age * 90, y: at.y + Math.min(age * 50, RADIUS * 2.5) + Math.sin(age * 4) * 2 }, { x: 0, y: 0 }, time)
+    return
+  }
+  if (theme === 'ice') {
+    const pos = { x: at.x, y: at.y + Math.min(age * 60, RADIUS * 1.6) + Math.sin(age * 3) * 2 }
+    drawPlayer(ctx, pos, { x: 0, y: 0 }, time)
+    const frost = Math.min(1, age * 1.5)
+    const size = RADIUS + 5
+    ctx.fillStyle = `rgba(190, 235, 255, ${0.6 * frost})`
+    ctx.strokeStyle = `rgba(255, 255, 255, ${0.9 * frost})`
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.roundRect(pos.x - size, pos.y - size, size * 2, size * 2, 4)
+    ctx.fill()
+    ctx.stroke()
+    return
+  }
   const pos = { x: at.x, y: at.y + Math.min(age * 80, RADIUS * 3) }
   drawPlayer(ctx, pos, { x: 0, y: 0 }, time)
   const char = Math.min(1, age * 1.5)
@@ -404,7 +554,7 @@ function drawSinkingPlayer(ctx: CanvasRenderingContext2D, { at, age }: NonNullab
 }
 
 /** A hot flash, molten droplets thrown up where the player went in, a ripple across the surface, and rising smoke. */
-function drawSplash(ctx: CanvasRenderingContext2D, { at, age }: NonNullable<Effects['lavaDeath']>, level: Level) {
+function drawSplash(ctx: CanvasRenderingContext2D, { at, age }: NonNullable<Effects['sinking']>, level: Level) {
   const surface = level.deathY
   const flash = Math.max(0, 1 - age / 0.7)
   if (flash > 0) {
@@ -448,6 +598,74 @@ function drawSplash(ctx: CanvasRenderingContext2D, { at, age }: NonNullable<Effe
   }
 }
 
+/** Spray thrown up where the player went into the water, a ripple, and a mist drifting off it. */
+function drawWaterSplash(ctx: CanvasRenderingContext2D, { at, age }: NonNullable<Effects['sinking']>, level: Level, look: SplashLook) {
+  const surface = level.deathY
+  const ripple = Math.min(1, age / 1.4)
+  if (ripple < 1) {
+    ctx.strokeStyle = `rgba(${look.ripple}, ${0.8 * (1 - ripple)})`
+    ctx.lineWidth = 3
+    ctx.beginPath()
+    ctx.ellipse(at.x, surface, 25 + 150 * ripple, 6 + 14 * ripple, 0, 0, Math.PI * 2)
+    ctx.stroke()
+  }
+
+  for (let i = 0; i < 30; i++) {
+    const vx = (hash(i * 4.3) - 0.5) * 500
+    const vy = -(400 + hash(i * 9.1) * 600)
+    const x = at.x + vx * age
+    const y = surface - 4 + vy * age + 0.5 * 2000 * age * age
+    if (y > surface) continue
+    ctx.fillStyle = `rgba(${look.spray}, ${0.9 - 0.4 * hash(i * 3.3)})`
+    ctx.beginPath()
+    ctx.arc(x, y, 2.5 + hash(i * 2.7) * 4, 0, Math.PI * 2)
+    ctx.fill()
+  }
+
+  for (let i = 0; i < 8; i++) {
+    const t = age - i * 0.12
+    if (t <= 0 || t > 2) continue
+    const k = t / 2
+    ctx.fillStyle = `rgba(${look.mist}, ${0.45 * (1 - k)})`
+    ctx.beginPath()
+    ctx.arc(at.x + (hash(i * 6.1) - 0.5) * 80 + Math.sin(t * 2 + i) * 8, surface - 10 - t * 60, 14 + 36 * k, 0, Math.PI * 2)
+    ctx.fill()
+  }
+}
+
+/** Shards of ice and a little frost cloud bursting from where the rope last slipped off. */
+function drawIcePuff(ctx: CanvasRenderingContext2D, sim: Sim) {
+  if (!sim.slip) return
+  const age = sim.time - sim.slip.time
+  if (age > ICE_PUFF_SECS) return
+  const k = age / ICE_PUFF_SECS
+  const { at } = sim.slip
+  ctx.fillStyle = `rgba(235, 248, 255, ${0.55 * (1 - k)})`
+  ctx.beginPath()
+  ctx.arc(at.x, at.y, 8 + 30 * Math.sqrt(k), 0, Math.PI * 2)
+  ctx.fill()
+
+  for (let i = 0; i < 14; i++) {
+    const angle = hash(i * 3.9 + 0.5) * Math.PI * 2
+    const speed = 120 + hash(i * 7.3) * 260
+    const x = at.x + Math.cos(angle) * speed * age
+    const y = at.y + Math.sin(angle) * speed * age + 0.5 * 900 * age * age
+    const size = (3 + hash(i * 1.9) * 3.5) * (1 - 0.5 * k)
+    ctx.save()
+    ctx.translate(x, y)
+    ctx.rotate(angle + age * 8)
+    ctx.fillStyle = `rgba(${i % 3 ? 255 : 170}, ${i % 3 ? 255 : 225}, 255, ${1 - k})`
+    ctx.beginPath()
+    ctx.moveTo(0, -size)
+    ctx.lineTo(size * 0.5, 0)
+    ctx.lineTo(0, size)
+    ctx.lineTo(-size * 0.5, 0)
+    ctx.closePath()
+    ctx.fill()
+    ctx.restore()
+  }
+}
+
 /** The short cord holding the ninja to a struck gong, in the headband's red; it sags while slack. */
 function drawGongCord(ctx: CanvasRenderingContext2D, from: Vec, to: Vec) {
   const length = GONG_CORD_LENGTH
@@ -467,6 +685,319 @@ function drawHookHead(ctx: CanvasRenderingContext2D, p: Vec) {
   ctx.beginPath()
   ctx.arc(p.x, p.y, 4, 0, Math.PI * 2)
   ctx.fill()
+}
+
+/** Snowflakes drifting down behind everything, with a little parallax. */
+function drawSnow(ctx: CanvasRenderingContext2D, cam: Camera, w: number, h: number, time: number) {
+  const parallax = 0.3
+  const halfW = w / 2 / cam.zoom
+  const halfH = h / 2 / cam.zoom
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.6)'
+  for (const s of SNOW) {
+    const x = ((((s.x - cam.pos.x * parallax + Math.sin(time * 0.7 + s.y) * 12) % 3000) + 3000) % 3000) - 1500
+    const y = ((((s.y + time * s.fall - cam.pos.y * parallax) % 2000) + 2000) % 2000) - 1000
+    if (Math.abs(x) > halfW + 4 || Math.abs(y) > halfH + 4) continue
+    ctx.beginPath()
+    ctx.arc(x, y, s.r, 0, Math.PI * 2)
+    ctx.fill()
+  }
+}
+
+/** Glossy streaks across an ice surface, clipped to its outline. */
+function drawIceSheen(ctx: CanvasRenderingContext2D, poly: Poly, colour: string) {
+  const xs = poly.pts.map((p) => p.x)
+  const ys = poly.pts.map((p) => p.y)
+  const [minX, maxX, minY, maxY] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)]
+  ctx.save()
+  ctx.clip()
+  ctx.strokeStyle = colour
+  ctx.lineWidth = 4
+  ctx.beginPath()
+  for (let x = minX - (maxY - minY); x < maxX; x += 90) {
+    ctx.moveTo(x, maxY)
+    ctx.lineTo(x + (maxY - minY), minY)
+  }
+  ctx.stroke()
+  ctx.restore()
+}
+
+/** A layer of snow or moss along the upward-facing edges of rock and wood. */
+function drawCaps(ctx: CanvasRenderingContext2D, poly: Poly, colour: string) {
+  ctx.strokeStyle = colour
+  ctx.lineWidth = 6
+  ctx.lineCap = 'round'
+  ctx.beginPath()
+  poly.pts.forEach((a, i) => {
+    if (poly.edgeNormals[i].y > -0.5) return
+    const b = poly.pts[(i + 1) % poly.pts.length]
+    ctx.moveTo(a.x, a.y)
+    ctx.lineTo(b.x, b.y)
+  })
+  ctx.stroke()
+}
+
+/** A pole planted at `base` flying a red pennant that flutters. */
+function drawFlag(ctx: CanvasRenderingContext2D, base: Vec, time: number) {
+  const top = { x: base.x, y: base.y - 70 }
+  ctx.strokeStyle = '#d8d8e0'
+  ctx.lineWidth = 3
+  ctx.lineCap = 'round'
+  ctx.beginPath()
+  ctx.moveTo(base.x, base.y)
+  ctx.lineTo(top.x, top.y)
+  ctx.stroke()
+  const flutter = Math.sin(time * 6) * 4
+  ctx.fillStyle = '#ff4d5e'
+  ctx.beginPath()
+  ctx.moveTo(top.x, top.y)
+  ctx.quadraticCurveTo(top.x + 20, top.y + 4 + flutter, top.x + 42, top.y + 12 + flutter * 0.5)
+  ctx.quadraticCurveTo(top.x + 20, top.y + 18 - flutter, top.x, top.y + 26)
+  ctx.closePath()
+  ctx.fill()
+}
+
+/** A dashed racing stripe just inside the top of a launch ramp. */
+function drawRampStripe(ctx: CanvasRenderingContext2D, poly: Poly) {
+  ctx.strokeStyle = '#ff4d5e'
+  ctx.lineWidth = 4
+  ctx.setLineDash([26, 18])
+  ctx.beginPath()
+  let joined = false
+  poly.pts.forEach((a, i) => {
+    const n = poly.edgeNormals[i]
+    if (n.y > -0.3) {
+      joined = false
+      return
+    }
+    const b = poly.pts[(i + 1) % poly.pts.length]
+    if (!joined) ctx.moveTo(a.x - n.x * 8, a.y - n.y * 8)
+    ctx.lineTo(b.x - n.x * 8, b.y - n.y * 8)
+    joined = true
+  })
+  ctx.stroke()
+  ctx.setLineDash([])
+}
+
+/** A rope's hook on ice shakes more and more as its grip runs out; `held` is the fraction of the grip used. */
+function slippingHook(p: Vec, held: number): Vec {
+  const shake = Math.max(0, held - 0.3) * 8
+  return { x: p.x + Math.sin(held * 40) * shake, y: p.y + Math.cos(held * 33) * shake * 0.5 }
+}
+
+/** Each hanging vine, swaying with its swing, with leaves along it; a held brown vine trembles as it's about to snap. Snapped ones fall away. */
+function drawVines(ctx: CanvasRenderingContext2D, level: Level, sim: Sim) {
+  level.vines.forEach((vine, i) => {
+    const { angle, snapped } = sim.vines[i]
+    const fallen = snapped === null ? 0 : sim.time - snapped
+    if (fallen > VINE_FALL_SECS) return
+    ctx.save()
+    if (snapped !== null) {
+      ctx.globalAlpha = 1 - fallen / VINE_FALL_SECS
+      ctx.translate(0, 0.5 * BREAK_FALL_GRAVITY * fallen * fallen)
+      ctx.translate(vine.pivot.x, vine.pivot.y)
+      ctx.rotate(fallen * (hash(i) - 0.5) * 2)
+      ctx.translate(-vine.pivot.x, -vine.pivot.y)
+    }
+    const rope = sim.rope
+    const held = rope && 'vine' in rope.caught && rope.caught.vine === i ? rope : null
+    const strain = held?.grip ? Math.max(0, held.age / held.grip - 0.3) * 6 : 0
+    drawVine(ctx, vine, angle, strain, sim.time)
+    ctx.restore()
+  })
+}
+
+function drawVine(ctx: CanvasRenderingContext2D, vine: Vine, angle: number, strain: number, time: number) {
+  const look = VINE_LOOKS[vine.kind]
+  const at = (along: number) => {
+    const p = vinePoint(vine, angle, along)
+    const wiggle = Math.sin(along * 0.05) * 3 + Math.sin(time * 40 + along * 0.1) * strain
+    return { x: p.x + Math.cos(angle) * wiggle, y: p.y - Math.sin(angle) * wiggle }
+  }
+  ctx.strokeStyle = look.stem
+  ctx.lineWidth = vine.kind === 'green' ? 5 : 4.5
+  ctx.lineCap = 'round'
+  ctx.beginPath()
+  for (let along = 0; along <= vine.length; along += 12) {
+    const p = at(along)
+    if (along === 0) ctx.moveTo(p.x, p.y)
+    else ctx.lineTo(p.x, p.y)
+  }
+  ctx.stroke()
+
+  // Leaves on alternate sides; brown vines have fewer, and knots where they'll give way
+  ctx.fillStyle = look.leaf
+  const spacing = vine.kind === 'green' ? 34 : 70
+  for (let along = 30, side = 1; along < vine.length; along += spacing, side = -side) {
+    const p = at(along)
+    const dir = angle + side * 0.9 + Math.PI / 2
+    ctx.save()
+    ctx.translate(p.x, p.y)
+    ctx.rotate(-dir)
+    ctx.beginPath()
+    ctx.ellipse(0, 9, 4.5, 9, 0, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.restore()
+  }
+  if (vine.kind === 'brown') {
+    ctx.fillStyle = '#4a3018'
+    for (let along = 60; along < vine.length; along += 70) {
+      const p = at(along)
+      ctx.beginPath()
+      ctx.arc(p.x, p.y, 3.5, 0, Math.PI * 2)
+      ctx.fill()
+    }
+  }
+}
+
+/** Leaves and splinters bursting from the branch where a brown vine tore free. */
+function drawVineSnaps(ctx: CanvasRenderingContext2D, level: Level, sim: Sim) {
+  level.vines.forEach((vine, i) => {
+    const { snapped } = sim.vines[i]
+    if (snapped === null) return
+    const age = sim.time - snapped
+    if (age > VINE_SNAP_BURST_SECS) return
+    const k = age / VINE_SNAP_BURST_SECS
+    for (let j = 0; j < 12; j++) {
+      const angle = Math.PI * (0.15 + 0.7 * hash(j * 3.1 + i)) + (j % 2 ? 0 : Math.PI)
+      const speed = 100 + hash(j * 5.7 + i) * 200
+      const x = vine.pivot.x + Math.cos(angle) * speed * age
+      const y = vine.pivot.y + Math.sin(angle) * speed * age + 0.5 * 700 * age * age
+      ctx.save()
+      ctx.translate(x, y)
+      ctx.rotate(angle + age * 9)
+      ctx.globalAlpha = 1 - k
+      ctx.fillStyle = j % 3 ? VINE_LOOKS.brown.leaf : '#e8d2a0'
+      ctx.beginPath()
+      ctx.ellipse(0, 0, j % 3 ? 3 : 1.5, j % 3 ? 6 : 7, 0, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.restore()
+    }
+  })
+}
+
+/** A tree trunk from its top down past the river, with bark lines; purely background. */
+function drawTrunk(ctx: CanvasRenderingContext2D, { x, top, width }: Level['trunks'][number], level: Level) {
+  const bottom = level.deathY + 300
+  const bark = ctx.createLinearGradient(x - width / 2, 0, x + width / 2, 0)
+  bark.addColorStop(0, '#2a1c12')
+  bark.addColorStop(0.35, '#4b3423')
+  bark.addColorStop(1, '#1f150d')
+  ctx.fillStyle = bark
+  ctx.fillRect(x - width / 2, top, width, bottom - top)
+  ctx.strokeStyle = 'rgba(15, 8, 4, 0.45)'
+  ctx.lineWidth = 3
+  ctx.beginPath()
+  for (let i = 1; i < 4; i++) {
+    const lx = x - width / 2 + (width * i) / 4
+    for (let y = top; y < bottom; y += 120) {
+      const wobble = (hash(lx + y) - 0.5) * width * 0.15
+      ctx.moveTo(lx + wobble, y)
+      ctx.lineTo(lx - wobble, y + 90)
+    }
+  }
+  ctx.stroke()
+}
+
+/** Speckles of lighter green inside a canopy clump, as if sunlight were coming through the leaves. */
+function drawLeafDapples(ctx: CanvasRenderingContext2D, poly: Poly) {
+  const xs = poly.pts.map((p) => p.x)
+  const ys = poly.pts.map((p) => p.y)
+  const [minX, maxX, minY, maxY] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)]
+  ctx.save()
+  ctx.clip()
+  for (let x = minX; x < maxX; x += 34) {
+    for (let y = minY; y < maxY; y += 30) {
+      const n = hash(x * 0.37 + y * 1.13)
+      ctx.fillStyle = n > 0.6 ? 'rgba(150, 220, 90, 0.35)' : 'rgba(10, 40, 10, 0.25)'
+      ctx.beginPath()
+      ctx.ellipse(x + n * 20, y + hash(x + y) * 18, 10 + n * 8, 7 + n * 5, n * 3, 0, Math.PI * 2)
+      ctx.fill()
+    }
+  }
+  ctx.restore()
+}
+
+/** Far-off trunks with a little parallax, and shafts and specks of sunlight that shimmer through the canopy. */
+function drawCanopyLight(ctx: CanvasRenderingContext2D, cam: Camera, w: number, h: number, time: number) {
+  const halfW = w / 2 / cam.zoom
+  const halfH = h / 2 / cam.zoom
+  const parallax = 0.3
+  const spacing = 380
+  ctx.fillStyle = 'rgba(20, 50, 28, 0.55)'
+  const shift = cam.pos.x * parallax
+  for (let i = Math.floor((shift - halfW) / spacing) - 1; i * spacing < shift + halfW + spacing; i++) {
+    const width = 40 + hash(i * 2.1) * 50
+    ctx.fillRect(i * spacing + hash(i * 5.3) * 200 - shift - width / 2, -halfH, width, halfH * 2)
+  }
+
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  for (let i = 0; i < 5; i++) {
+    const x = ((((hash(i * 9.1) * 2400 - cam.pos.x * 0.15) % 2400) + 2400) % 2400) - 1200
+    const shimmer = 0.04 + 0.03 * Math.sin(time * 0.6 + i * 1.7)
+    const beam = ctx.createLinearGradient(0, -halfH, 0, halfH)
+    beam.addColorStop(0, `rgba(255, 250, 190, ${shimmer * 2})`)
+    beam.addColorStop(1, 'rgba(255, 250, 190, 0)')
+    ctx.fillStyle = beam
+    ctx.beginPath()
+    ctx.moveTo(x - 40, -halfH)
+    ctx.lineTo(x + 50, -halfH)
+    ctx.lineTo(x + 50 + halfH * 0.7, halfH)
+    ctx.lineTo(x - 90 + halfH * 0.7, halfH)
+    ctx.closePath()
+    ctx.fill()
+  }
+  for (const s of DAPPLES) {
+    const x = ((((s.x - cam.pos.x * 0.5) % 3000) + 3000) % 3000) - 1500
+    const y = ((((s.y - cam.pos.y * 0.5) % 2000) + 2000) % 2000) - 1000
+    if (Math.abs(x) > halfW + 20 || Math.abs(y) > halfH + 20) continue
+    ctx.fillStyle = `rgba(230, 255, 170, ${0.06 + 0.06 * Math.sin(time * 1.3 + s.x)})`
+    ctx.beginPath()
+    ctx.arc(x, y, s.r, 0, Math.PI * 2)
+    ctx.fill()
+  }
+  ctx.restore()
+}
+
+/** For jungle levels: a murky river flowing past, with ripples and leaves carried downstream. */
+function drawRiver(ctx: CanvasRenderingContext2D, level: Level, cam: Camera, w: number, h: number, time: number) {
+  const left = cam.pos.x - w / 2 / cam.zoom - 20
+  const right = cam.pos.x + w / 2 / cam.zoom + 20
+  const bottom = cam.pos.y + h / 2 / cam.zoom + 20
+  if (bottom < level.deathY - 20) return
+
+  const surface = (x: number) => level.deathY + Math.sin(x * 0.01 - time * 1.5) * 4 + Math.sin(x * 0.027 - time * 2.1) * 2
+  const grad = ctx.createLinearGradient(0, level.deathY - 10, 0, level.deathY + 220)
+  grad.addColorStop(0, '#9fc38a')
+  grad.addColorStop(0.08, '#3d6b4a')
+  grad.addColorStop(1, '#14291c')
+  ctx.fillStyle = grad
+  ctx.beginPath()
+  ctx.moveTo(left, Math.max(bottom, level.deathY + 40))
+  const step = 24
+  for (let x = Math.floor(left / step) * step; x <= right + step; x += step) ctx.lineTo(x, surface(x))
+  ctx.lineTo(right + step, Math.max(bottom, level.deathY + 40))
+  ctx.closePath()
+  ctx.fill()
+
+  // Streaks and leaves drift with the current
+  const spacing = 180
+  const drift = time * 70
+  for (let i = Math.floor((left - drift) / spacing) - 1; i * spacing + drift < right; i++) {
+    const x = i * spacing + drift + hash(i * 3.3) * spacing * 0.5
+    const depth = 14 + hash(i * 1.9) * 60
+    ctx.strokeStyle = 'rgba(200, 230, 190, 0.25)'
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.moveTo(x, surface(x) + depth)
+    ctx.lineTo(x + 40 + hash(i * 6.1) * 40, surface(x) + depth)
+    ctx.stroke()
+    if (hash(i * 7.7) < 0.4) continue
+    ctx.fillStyle = hash(i * 8.3) < 0.5 ? '#6cb83f' : '#b08040'
+    ctx.beginPath()
+    ctx.ellipse(x, surface(x) + 1, 7, 3, 0.3, 0, Math.PI * 2)
+    ctx.fill()
+  }
 }
 
 function hash(n: number): number {
