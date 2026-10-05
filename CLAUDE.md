@@ -9,15 +9,18 @@ A mobile-first browser game that is only the ninja rope: swing from A to B over 
 - Levels come in named sets of five (set 1 is "Lava"). Each set gets harder as it goes and the next introduces a new element. Levels should be about as long as 1-2, since shorter runs felt too easy
 - Players swing almost constantly and rarely land, so put hazards and winds across the swing paths between anchors, not over ledges or landing spots
 - How far apart anchors can be depends on the speed the player is expected to carry: letting go at speed flies them a ballistic arc before the next grab (up to roughly 400 extra at the speed cap), so gaps can exceed the rope's range (`HOOK_RANGE`) where speed is expected. Where the player starts from rest (level start, after a dead stop), the next anchor must be within range
+- The camera frames the player three-quarters of the way down the screen, so the bottom grip zone (touches ignored as hands holding the phone) must stay small or firing downwards becomes impossible
 - 1-2 is the original hand-tested run. Levels written by Claude are unplayed until the user play-tests them; say so when adding one
 
 ## Working in this repo
 
 - The user tests on their phone through `npm run dev` on the LAN. Run the dev server outside the sandbox: inside it, Vite doesn't see file changes and keeps serving stale code
 - `npm run snapshot`, `npm run e2e` and any Playwright or Chrome use must run outside the sandbox (Chrome can't create its profile sockets inside it). Git writes to `.git` and `gh` also need to run outside the sandbox
-- `scripts/*.ts` run directly in Node with type stripping, so they can't import `src/` modules that use extensionless imports (e.g. the level list); that's why `snapshot.ts` reads level ids from file names
+- `scripts/*.ts` run directly in Node with type stripping, so they can't plainly import `src/` modules that use extensionless imports (e.g. the level list). Load them through Vite's `runnerImport` as `scripts/bot.ts` does, or avoid them as `snapshot.ts` does by reading level ids from file names
 - Use `npm run snapshot -- overview` to review a level's layout, and the scenario page (`debug/scenario.html`) for a specific moment. The e2e checks read state through `window.game`, which only exists in dev builds
-- After adding or changing a level, or retuning movement, run `npm run bot` to check every level is still beatable by human-like play; it found a level the rope-range cut had made impossible
+- After adding or changing a level, or retuning movement, run `npm run bot` to check every level is still beatable by human-like play; it found a level the rope-range cut had made impossible. A ✓ means a careful player can beat it, not that it's easy: the bot searches many options with full knowledge of the winds. `npm run bot -- <id> --trace` then `npm run snapshot -- route-<id>` shows the route it took
+- The dev server reloads the page when new files appear, which can reset a scripted browser check mid-run; rerun before suspecting the game
+- Open threads and ideas we haven't built yet are in `docs/ideas.md`
 - The physics tests and snapshot scenarios use coordinates in level 1-2, so changing its geometry can break them
 - When adding a test for a fix, check it fails with the fix reverted; several tests here first passed for the wrong reason
 - Pushes to `master` deploy to GitHub Pages (https://glenjamin.github.io/on-the-ropes/) via `.github/workflows/pages.yml`. Committing and pushing directly to master is fine on this project
