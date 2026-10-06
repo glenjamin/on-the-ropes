@@ -15,7 +15,7 @@ import {
   type Vec,
 } from './geom'
 import { gongCentre, restingGong, swingGong, type Gong } from './gong'
-import { gustStrength, type Flipper, type Level, type Poly, type Surface, type Vine } from './level'
+import { gustStrength, moverOffset, moverVelocity, wireLive, type Flipper, type Level, type Poly, type Surface, type Vine } from './level'
 
 export const RADIUS = 12
 export const HOOK_RANGE = 700
@@ -86,6 +86,12 @@ export const LAUNCHER_HOLD_SECS = 0.5
 const LAUNCHER_REARM_SECS = 0.5
 /** How near a launcher's resting point the player must come to be caught. */
 const LAUNCHER_CATCH = 36
+/** How quickly a conveyor belt brings whoever stands on it up to its speed (per second). */
+const BELT_GRIP = 4
+/** How far a moving platform can squeeze the player into something else before crushing them. */
+const CRUSH_DEPTH = 5
+/** Half a live wire's thickness: touching it is the player's radius plus this away. */
+export const WIRE_RADIUS = 3
 
 /** What has lifted the speed limit, until the next rope catches or the player touches terrain. */
 type Boost = 'ramp' | 'vine' | 'kick' | 'launcher'
@@ -96,15 +102,17 @@ type Anchor = { p: Vec; side: number }
 
 /**
  * `age` is how long the rope has been attached; `grip` how long it holds before slipping off, or null if it holds for good.
- * `caught` is the terrain piece it caught on, or the vine and how far down it.
+ * `caught` is the terrain piece it caught on, the vine and how far down it, or the platform and where on it (unmoved).
  */
 export type Rope = { anchors: Anchor[]; length: number; age: number; grip: number | null; caught: Caught }
-export type Caught = { poly: number } | { vine: number; along: number }
+export type Caught = { poly: number } | { vine: number; along: number } | { mover: number; at: Vec }
 /** A vine's swing: `angle` from straight down (radians, positive towards +x), `spin` its rate, and when it snapped. */
 export type VineState = { angle: number; spin: number; snapped: number | null }
 export type Hook = { origin: Vec; pos: Vec; dir: Vec; travelled: number }
 /** The player caught in a launcher's cup at `caught`; `fired` once it has thrown them out. */
 export type Launch = { launcher: number; caught: number; fired: boolean }
+/** Ways to die other than falling: touching a live wire, or being squeezed by a moving platform. */
+export type Death = { cause: 'zapped' | 'crushed'; at: Vec; time: number }
 
 export class Sim {
   pos: Vec
@@ -138,6 +146,8 @@ export class Sim {
   /** The last time each bumper that has been hit kicked the player, by terrain index, for its flash. */
   bumps: { poly: number; time: number }[] = []
   launch: Launch | null = null
+  /** Set when something other than a fall kills the player; the sim stops there. */
+  dead: Death | null = null
 
   constructor(private level: Level) {
     this.pos = { ...level.start }
@@ -148,8 +158,8 @@ export class Sim {
   /** An independent copy, for exploring different choices from the same moment. */
   clone(): Sim {
     const copy = new Sim(this.level)
-    const { pos, vel, rope, hook, grounded, stiffness, startLength, gravity, time, gong, slip, broken, boost, vines, flips, bumps, launch } = this
-    Object.assign(copy, structuredClone({ pos, vel, rope, hook, grounded, stiffness, startLength, gravity, time, gong, slip, broken, boost, vines, flips, bumps, launch }))
+    const { pos, vel, rope, hook, grounded, stiffness, startLength, gravity, time, gong, slip, broken, boost, vines, flips, bumps, launch, dead } = this
+    Object.assign(copy, structuredClone({ pos, vel, rope, hook, grounded, stiffness, startLength, gravity, time, gong, slip, broken, boost, vines, flips, bumps, launch, dead }))
     return copy
   }
 
@@ -163,6 +173,7 @@ export class Sim {
     this.flips = this.level.flippers.map(() => null)
     this.bumps = []
     this.launch = null
+    this.dead = null
     this.pos = { ...this.level.start }
     this.vel = { x: 0, y: 0 }
     this.rope = null
@@ -187,6 +198,7 @@ export class Sim {
 
   /** Advances by dt while reeling the rope out (positive speed) or in (negative). */
   step(dt: number, reelSpeed: number) {
+    if (this.dead) return
     const prev = this.pos
     this.time += dt
     if (this.rope) this.rope.age += dt
@@ -197,6 +209,7 @@ export class Sim {
     this.vel.y += this.gravity * dt
     this.blowInGusts(dt)
     this.pumpOnVine(dt)
+    this.rideMover()
     this.swingVines(dt, this.pullOnRope(dt))
     const speed = len(this.vel)
     if (speed > this.speedLimit()) this.vel = scale(this.vel, this.speedLimit() / speed)
@@ -208,6 +221,7 @@ export class Sim {
       this.updateWraps(firedFrom ?? prev)
     }
     this.collide(dt)
+    this.zapOnWires()
     this.batWithFlippers(prev, dt)
     this.catchInLauncher()
     if (this.gong) this.bounceOffGong(this.gong, dt)
@@ -320,7 +334,7 @@ export class Sim {
     this.rope = null
     this.slip = { at: { ...rope.anchors[0].p }, time: this.time }
     if ('vine' in caught) this.vines[caught.vine].snapped = this.time
-    else if (this.level.polys[caught.poly].surface === 'dark-ice') this.broken.push({ poly: caught.poly, time: this.time })
+    else if ('poly' in caught && this.level.polys[caught.poly].surface === 'dark-ice') this.broken.push({ poly: caught.poly, time: this.time })
   }
 
   /** Changes the rope's rest length; reeling in a taut rope stretches it, and the stretch pulls the player in. */
@@ -354,7 +368,7 @@ export class Sim {
     const onVine = 'vine' in rope.caught
     const stiffness = onVine ? VINE_ROPE_STIFFNESS : this.stiffness
     // Damp the stretch as it changes, which on a swinging vine means relative to the vine's own movement
-    const pivotVel = rope.anchors.length === 1 && 'vine' in rope.caught ? this.vineVelocity(rope.caught.vine, rope.caught.along) : { x: 0, y: 0 }
+    const pivotVel = rope.anchors.length === 1 ? this.anchorVelocity(rope.caught) : { x: 0, y: 0 }
     const damping = 2 * (onVine ? VINE_ROPE_DAMPING : ROPE_DAMPING) * Math.sqrt(stiffness) * dot(sub(this.vel, pivotVel), n)
     const pull = Math.max(0, stiffness * stretch - damping)
     this.vel = add(this.vel, scale(n, pull * dt))
@@ -399,9 +413,35 @@ export class Sim {
     if (rope && held) rope.anchors[0].p = vinePoint(this.level.vines[held.vine], this.vines[held.vine].angle, held.along)
   }
 
-  private vineVelocity(index: number, along: number): Vec {
-    const { angle, spin } = this.vines[index]
-    return { x: Math.cos(angle) * spin * along, y: -Math.sin(angle) * spin * along }
+  /** How fast the rope's first anchor is moving, with whatever it caught on. */
+  private anchorVelocity(caught: Caught): Vec {
+    if ('mover' in caught) return moverVelocity(this.level.movers[caught.mover], this.time)
+    if (!('vine' in caught)) return { x: 0, y: 0 }
+    const { angle, spin } = this.vines[caught.vine]
+    return { x: Math.cos(angle) * spin * caught.along, y: -Math.sin(angle) * spin * caught.along }
+  }
+
+  /** A rope caught on a moving platform is carried along with it. */
+  private rideMover() {
+    const rope = this.rope
+    if (!rope || !('mover' in rope.caught)) return
+    rope.anchors[0].p = add(rope.caught.at, moverOffset(this.level.movers[rope.caught.mover], this.time))
+  }
+
+  /** Touching a live wire is deadly; the rope is insulated, so it passes through them harmlessly. */
+  private zapOnWires() {
+    for (const wire of this.level.wires) {
+      if (!wireLive(wire, this.time) || dist(this.pos, closestOnSegment(this.pos, wire.from, wire.to)) >= RADIUS + WIRE_RADIUS) continue
+      this.die('zapped')
+      return
+    }
+  }
+
+  private die(cause: Death['cause']) {
+    this.dead = { cause, at: { ...this.pos }, time: this.time }
+    this.rope = null
+    this.hook = null
+    this.vel = { x: 0, y: 0 }
   }
 
   /** Moves the hook, returning where it was fired from if it attached. */
@@ -419,6 +459,17 @@ export class Sim {
       if (vine.kind === 'green') this.boost = 'vine'
       return hook.origin
     }
+    const onMover = this.moverHit(hook.pos, next)
+    if (onMover && (!hit || onMover.t < hit.t)) {
+      // The hook glances off crates, which are for riding in, not swinging from
+      if ('conveyor' in this.level.movers[onMover.mover]) {
+        this.hook = null
+        return null
+      }
+      const p = add(onMover.point, scale(onMover.normal, ANCHOR_OFFSET))
+      this.attach(p, null, { mover: onMover.mover, at: sub(p, moverOffset(this.level.movers[onMover.mover], this.time)) }, this.startLength)
+      return hook.origin
+    }
     if (hit) {
       this.attach(add(hit.point, scale(hit.normal, ANCHOR_OFFSET)), GRIP_SECS[hit.poly.surface], { poly: this.level.polys.indexOf(hit.poly) }, this.startLength)
       return hook.origin
@@ -434,6 +485,16 @@ export class Sim {
     this.rope = { anchors: [{ p, side: 0 }], length, age: 0, grip, caught }
     this.boost = null
     this.hook = null
+  }
+
+  /** Where along p→p2 it first strikes a moving platform or crate, where they are now. */
+  private moverHit(p: Vec, p2: Vec): { t: number; point: Vec; normal: Vec; mover: number } | null {
+    let best: { t: number; point: Vec; normal: Vec; mover: number } | null = null
+    this.movingPolys().forEach((poly, mover) => {
+      const hit = firstHit(p, p2, poly)
+      if (hit && (!best || hit.t < best.t)) best = { ...hit, mover }
+    })
+    return best
   }
 
   /** Where along p→p2 it first crosses a vine still hanging, and how far down that vine. */
@@ -470,14 +531,27 @@ export class Sim {
     }
   }
 
+  /**
+   * Pushes the player out of terrain, then out of moving platforms and crates, which carry their speed into the bounce.
+   * Standing on a belt or mover drags the player along with it; being squeezed into something by a mover crushes them.
+   */
   private collide(dt: number) {
     this.grounded = false
     let onIce = false
     let onRamp = false
     let onOther = false
     let kicked = false
-    for (const poly of this.solidPolys()) {
+    let pushedByMover = false
+    /** The velocity of whatever the player stands on, and how firmly it carries them along. */
+    let floor: { vel: Vec; grip: number } | null = null
+    const movers = this.movingPolys()
+    const touching = [
+      ...this.solidPolys().map((poly) => ({ poly, mover: null })),
+      ...movers.map((poly, mover) => ({ poly, mover })),
+    ]
+    for (const { poly, mover } of touching) {
       const pts = poly.pts
+      const surfaceVel = mover === null ? { x: 0, y: 0 } : moverVelocity(this.level.movers[mover], this.time)
       if (pointInPolygon(this.pos, pts)) this.pos = escapePolygon(this.pos, pts, poly.edgeNormals)
       for (let i = 0; i < pts.length; i++) {
         const c = closestOnSegment(this.pos, pts[i], pts[(i + 1) % pts.length])
@@ -486,12 +560,13 @@ export class Sim {
         if (l >= RADIUS) continue
         const n = l > 1e-6 ? scale(d, 1 / l) : poly.edgeNormals[i]
         this.pos = add(c, scale(n, RADIUS))
+        pushedByMover ||= mover !== null
         const isFloor = n.y < -0.6
         const isCeiling = n.y > 0.6
         // Only sliding on top of a ramp launches; brushing its sides or underneath neither launches nor lands
         if (poly.ramp) onRamp ||= isFloor
         else if (!poly.bumper) onOther = true
-        const vn = dot(this.vel, n)
+        const vn = dot(sub(this.vel, surfaceVel), n)
         if (vn < 0 && poly.bumper) {
           this.vel = add(this.vel, scale(n, -2 * vn + BUMPER_KICK))
           const index = this.level.polys.indexOf(poly)
@@ -505,17 +580,34 @@ export class Sim {
         if (isFloor) {
           this.grounded = true
           onIce ||= poly.surface !== 'rock'
+          if (mover !== null && !floor) {
+            // A mover keeps carrying the player as it speeds up, slows down and turns
+            const before = moverVelocity(this.level.movers[mover], this.time - dt)
+            this.vel.x += surfaceVel.x - before.x
+            floor = { vel: surfaceVel, grip: GROUND_FRICTION }
+          } else if (poly.belt) floor = { vel: { x: poly.belt, y: 0 }, grip: BELT_GRIP }
         }
       }
     }
+    if (pushedByMover && this.squeezed()) this.die('crushed')
     if (kicked) this.boost = 'kick'
     else if (onOther) this.boost = null
     else if (onRamp) this.boost = 'ramp'
     if (!this.grounded || this.rope) return
-    this.vel.x *= Math.exp(-(onIce ? ICE_FRICTION : GROUND_FRICTION) * dt)
+    floor ??= { vel: { x: 0, y: 0 }, grip: onIce ? ICE_FRICTION : GROUND_FRICTION }
+    this.vel.x = floor.vel.x + (this.vel.x - floor.vel.x) * Math.exp(-floor.grip * dt)
     const speed = len(this.vel)
     const push = (onIce ? ICE_GLIDE : 0) + (this.boost === 'ramp' ? RAMP_BOOST : 0)
     if (push && speed > GLIDE_MIN_SPEED) this.vel = scale(this.vel, Math.min(this.speedLimit(), speed + push * dt) / speed)
+  }
+
+  /** Whether the player is pressed into anything solid deeper than they can be squeezed. */
+  private squeezed(): boolean {
+    return [...this.solidPolys(), ...this.movingPolys()].some(
+      (poly) =>
+        pointInPolygon(this.pos, poly.pts) ||
+        poly.pts.some((p, i) => dist(this.pos, closestOnSegment(this.pos, p, poly.pts[(i + 1) % poly.pts.length])) < RADIUS - CRUSH_DEPTH),
+    )
   }
 
   private raycast(from: Vec, to: Vec): { t: number; point: Vec; normal: Vec; poly: Poly } | null {
@@ -563,6 +655,14 @@ export class Sim {
     return this.boost ? BOOST_MAX_SPEED[this.boost] : MAX_SPEED
   }
 
+  /** Moving platforms and crates where they are now, in the level's order. */
+  movingPolys(): Poly[] {
+    return this.level.movers.map((mover) => {
+      const offset = moverOffset(mover, this.time)
+      return { ...mover.poly, pts: mover.poly.pts.map((p) => add(p, offset)) }
+    })
+  }
+
   /** The terrain still in place, leaving out ice that has broken off. */
   solidPolys(): Poly[] {
     if (!this.broken.length) return this.level.polys
@@ -579,6 +679,16 @@ export function fixedLength(rope: Rope): number {
   let total = 0
   for (let i = 1; i < rope.anchors.length; i++) total += dist(rope.anchors[i - 1].p, rope.anchors[i].p)
   return total
+}
+
+/** Where p→p2 first crosses one of the polygon's edges, and that edge's outward normal. */
+function firstHit(p: Vec, p2: Vec, poly: Poly): { t: number; point: Vec; normal: Vec } | null {
+  let best: { t: number; normal: Vec } | null = null
+  for (let i = 0; i < poly.pts.length; i++) {
+    const t = segmentHit(p, p2, poly.pts[i], poly.pts[(i + 1) % poly.pts.length])
+    if (t !== null && (!best || t < best.t)) best = { t, normal: poly.edgeNormals[i] }
+  }
+  return best && { t: best.t, point: add(p, scale(sub(p2, p), best.t)), normal: best.normal }
 }
 
 function escapePolygon(p: Vec, pts: Vec[], normals: Vec[]): Vec {

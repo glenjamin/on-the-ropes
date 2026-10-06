@@ -14,14 +14,17 @@
 - A flipper only gains about as much height as a good swing does, wherever it is, so it can bat you across a gap but not up to somewhere out of reach; 5-5 climbs with a launcher instead
 - Flippers aren't grabbable and the rope passes through them; a launcher's cup is ordinary terrain the rope can catch on, and is shallow, so it can only fire upwards of about 30° above level without clipping its rim
 - Like ice, the bot treats bumpers as rock when picking targets and finds out about the kick by simulating
+- Factory (set 6) is unplayed. Things to try: how fast the presses and shuttles move (each platform's `travel` and `period` in 6-1 to 6-5), how hard a belt grabs your feet (`BELT_GRIP`), how deep a press can squeeze you before it crushes (`CRUSH_DEPTH`), how thick a wire is to touch (`WIRE_RADIUS`), all in `src/sim.ts`, and each conveyor's `speed` and crate count. Crate size is `CRATE_INNER`, `CRATE_DEPTH` and `CRATE_WALL` in `src/level.ts`
+- Moving platforms are grabbable and carry the rope's hook with them, but the rope doesn't wrap round their corners, and they pass through terrain; levels keep them in open air
+- The hook glances off crates rather than catching, so that the crate lift in 6-4 has to be ridden; otherwise the rope could climb the column of crates like a ladder
+- Wires are deadly only to the player: the rope passes through them, insulated. A pulsing wire spits sparks for a moment before it goes live
+- A platform only crushes you when it squeezes you against something else; one sweeping through a swing knocks you aside, carrying its speed into the bounce
 
 ## Ideas for later sets
 
 - Other jungle mechanics we didn't build: springy leaves that launch you, thorny branches the rope slides off. Trunks are a background layer in the level format that other sets could use for hills behind the lava or distant clouds
 - Crumbling rocks that break a second or two after being grabbed
 - Lava vents or bouncy pads for launches; the pinball launcher's cup could be reskinned as either
-- Hazard surfaces that kill on touch away from the lava
-- Moving rocks that carry the rope anchor with them (the most work: moving collision and anchors)
 
 ## Polish not yet done
 

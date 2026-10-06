@@ -1,12 +1,15 @@
-// A bot that plays levels the way a person could: it taps points on terrain and vines it can see, with human reaction
-// gaps and coarse timing, and searches for a route by keeping a few promising positions after each move.
+// A bot that plays levels the way a person could: it taps points on terrain, vines and moving things it can see, with
+// human reaction gaps and coarse timing, and searches for a route by keeping a few promising positions after each move.
 import { add, dist, dot, norm, scale, sub, type Vec } from './geom'
 import type { Level } from './level'
 import { playStep, SUBSTEP, TIME_SCALE } from './pace'
 import { HOOK_RANGE, RADIUS, Sim, vinePoint } from './sim'
 
-/** One tap to fire at `target`, a tap to let go after `hold`, then `fly` before the next tap. Real seconds. */
-export type Move = { target: Vec; hold: number; fly: number }
+/**
+ * One tap to fire at `target`, a tap to let go after `hold`, then `fly` before the next tap. Real seconds. With no
+ * target, it doesn't tap for `hold` instead, to drop into a crate and ride it.
+ */
+export type Move = { target: Vec | null; hold: number; fly: number }
 
 export type Route = {
   solved: boolean
@@ -28,6 +31,8 @@ const MAX_MOVES = 60
 const BREAK_BONUS = 120
 /** How far apart along a vine the bot considers tapping. */
 const VINE_SPACING = 90
+/** How close a crate must be for the bot to consider holding off tapping to drop into it or ride it. */
+const CRATE_SIGHT = 1200
 /** Roughly what's on screen around the player in landscape, given the camera framing. */
 const VIEW = { side: 680, above: 480, below: 170 }
 
@@ -51,6 +56,17 @@ export function findRoute(level: Level, wobble?: Wobble): Route {
   for (let depth = 0; depth < MAX_MOVES && beam.length; depth++) {
     const next: Node[] = []
     for (const node of beam) {
+      // Not tapping at all, to drop into a crate or ride one
+      for (const hold of cratesNear(node.sim, level) ? HOLDS : []) {
+        const move = { target: null, hold, fly: 0 }
+        const sim = node.sim.clone()
+        const outcome = advance(sim, level, hold)
+        if (outcome === 'dead') continue
+        if (wobble && !survivesWobble(node.sim, level, move, wobble, random)) continue
+        const child = { sim, moves: [...node.moves, move], duration: node.duration + hold, score: progress(sim, level) }
+        if (outcome === 'won') return route(child, level, true)
+        next.push(child)
+      }
       for (const target of targetsInView(node.sim, level)) {
         for (const hold of HOLDS) {
           const held = node.sim.clone()
@@ -90,6 +106,10 @@ export function traceRoute(level: Level, moves: Move[]): Trace {
   const trace: Trace = { path: [{ ...sim.pos }], grabs: [], releases: [] }
   const record = (s: Sim) => trace.path.push({ ...s.pos })
   for (const { target, hold, fly } of moves) {
+    if (!target) {
+      if (advance(sim, level, hold, record) !== 'playing') return trace
+      continue
+    }
     const from = { ...sim.pos }
     sim.fire(sub(target, sim.pos))
     const afterHold = advance(sim, level, hold, record)
@@ -104,9 +124,9 @@ export function traceRoute(level: Level, moves: Move[]): Trace {
 }
 
 function tryMove(sim: Sim, level: Level, { target, hold, fly }: Move): { outcome: Outcome; score: number } {
-  sim.fire(sub(target, sim.pos))
+  if (target) sim.fire(sub(target, sim.pos))
   let outcome = advance(sim, level, hold)
-  if (outcome === 'playing') {
+  if (outcome === 'playing' && target) {
     sim.release()
     outcome = advance(sim, level, fly)
   }
@@ -117,7 +137,11 @@ function wobbled({ target, hold, fly }: Move, wobble: Wobble, random: () => numb
   const angle = random() * Math.PI * 2
   const r = random() * wobble.aim
   const jitter = (t: number) => Math.max(0.12, t + (random() * 2 - 1) * wobble.timing)
-  return { target: { x: target.x + Math.cos(angle) * r, y: target.y + Math.sin(angle) * r }, hold: jitter(hold), fly: jitter(fly) }
+  return { target: target && { x: target.x + Math.cos(angle) * r, y: target.y + Math.sin(angle) * r }, hold: jitter(hold), fly: target ? jitter(fly) : 0 }
+}
+
+function survivesWobble(from: Sim, level: Level, move: Move, wobble: Wobble, random: () => number): boolean {
+  return Array.from({ length: WOBBLY_TRIES }, () => tryMove(from.clone(), level, wobbled(move, wobble, random))).every((t) => t.outcome !== 'dead')
 }
 
 /** Advances by real seconds at the game's pace, stopping early on reaching the gong or dying. */
@@ -127,14 +151,14 @@ function advance(sim: Sim, level: Level, seconds: number, onStep?: (sim: Sim) =>
     playStep(sim)
     onStep?.(sim)
     if (dist(sim.pos, level.goal.pos) < level.goal.radius + RADIUS) return 'won'
-    if (sim.pos.y + RADIUS > level.deathY) return 'dead'
+    if (sim.dead || sim.pos.y + RADIUS > level.deathY) return 'dead'
   }
   return 'playing'
 }
 
 /**
- * Points on visible terrain and vines within the rope's reach, favouring ones towards the gong and above the player.
- * Vines are aimed at where they hang right now, as a person would tap them.
+ * Points on visible terrain, vines and moving platforms within the rope's reach, favouring ones towards the gong and
+ * above the player. Vines and platforms are aimed at where they are right now, as a person would tap them.
  */
 function targetsInView(sim: Sim, level: Level): Vec[] {
   const { pos } = sim
@@ -145,7 +169,8 @@ function targetsInView(sim: Sim, level: Level): Vec[] {
     if (Math.abs(d.x) > VIEW.side || d.y < -VIEW.above || d.y > VIEW.below || dist(p, pos) > HOOK_RANGE) return
     candidates.push({ p, appeal: dot(norm(d), towardGoal) + (d.y < 0 ? 0.4 : 0) })
   }
-  for (const poly of sim.solidPolys()) {
+  const platforms = sim.movingPolys().filter((_, i) => !('conveyor' in level.movers[i]))
+  for (const poly of [...sim.solidPolys(), ...platforms]) {
     poly.pts.forEach((a, i) => {
       const b = poly.pts[(i + 1) % poly.pts.length]
       const steps = Math.max(1, Math.ceil(dist(a, b) / 70))
@@ -166,6 +191,10 @@ function targetsInView(sim: Sim, level: Level): Vec[] {
   // With nothing in reach, as in a long flight, tap ahead at nothing to wait it out
   if (!chosen.length) chosen.push(add(pos, scale(norm(sim.vel), HOOK_RANGE)))
   return chosen
+}
+
+function cratesNear(sim: Sim, level: Level): boolean {
+  return sim.movingPolys().some((poly, i) => 'conveyor' in level.movers[i] && poly.pts.some((p) => dist(p, sim.pos) < CRATE_SIGHT))
 }
 
 /**

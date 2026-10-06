@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { dist, pointInPolygon, segmentHit, type Vec } from './geom'
 import { gongCentre } from './gong'
-import { buildLevel, type FlipperData, type Level, type LevelData, type Shape, type Surface } from './level'
+import { buildLevel, moverOffset, type FlipperData, type Level, type LevelData, type PlatformData, type Shape, type Surface, type WireData } from './level'
 import lavaCave from './levels/1-2'
 import { skiJump } from './levels/ice'
 import { bumper } from './levels/pinball'
@@ -422,6 +422,82 @@ describe('swinging on the rope', () => {
       afterGrab = Math.max(afterGrab, Math.hypot(sim.vel.x, sim.vel.y))
     }
     expect(afterGrab).toBeLessThanOrEqual(900 + 1e-6)
+  })
+
+  it('a moving platform carries a player standing on it, and a rope caught on one moves with it', () => {
+    const platform: PlatformData = { rect: [-100, 0, 200, 30], travel: [400, 0], period: 4 }
+    const rider = new Sim(buildLevel({ ...flat, start: [0, -12], platforms: [platform] }))
+    run(rider, 2, 0)
+    expect(rider.grounded).toBe(true)
+    expect(rider.pos.x).toBeGreaterThan(350)
+    expect(rider.pos.x).toBeLessThan(450)
+
+    const hanger = new Sim(buildLevel({ ...flat, start: [0, 300], platforms: [platform] }))
+    hanger.gravity = 0
+    hanger.fire({ x: 0, y: -1 })
+    while (!hanger.rope) hanger.step(DT, 0)
+    const caughtAt = { ...hanger.rope!.anchors[0].p }
+    run(hanger, 1, -200)
+    const anchor = hanger.rope!.anchors[0].p
+    expect(anchor.x - caughtAt.x).toBeGreaterThan(150)
+    expect(Math.abs(anchor.y - caughtAt.y)).toBeLessThan(1e-6)
+    expect(hanger.pos.x).toBeGreaterThan(50)
+  })
+
+  it('a platform squeezing the player against a ceiling crushes them, but one stopping short doesn’t', () => {
+    const squeeze = (travel: number) => {
+      const ceiling: Shape = { rect: [-500, -260, 1000, 40] }
+      const sim = new Sim(buildLevel({ ...flat, start: [0, -12], shapes: [ceiling], platforms: [{ rect: [-100, 0, 200, 30], travel: [0, -travel], period: 4 }] }))
+      run(sim, 3, 0)
+      return sim.dead?.cause ?? null
+    }
+    expect(squeeze(215)).toBe('crushed')
+    expect(squeeze(190)).toBeNull()
+  })
+
+  it('a conveyor belt drives a player standing on it up to its speed', () => {
+    const sim = new Sim(buildLevel({ ...flat, start: [0, -12], shapes: [{ rect: [-500, 0, 5000, 100], belt: 300 }] }))
+    run(sim, 1.5, 0)
+    expect(sim.vel.x).toBeGreaterThan(250)
+    expect(sim.pos.x).toBeGreaterThan(200)
+  })
+
+  it('a crate carries a player sitting in it up and round its conveyor without throwing them out', () => {
+    const loop: [number, number][] = [[0, 0], [0, -600], [400, -600], [400, 0]]
+    const level = buildLevel({ ...flat, start: [0, -12], conveyors: [{ loop, speed: 250, crates: 1 }] })
+    const sim = new Sim(level)
+    let furthestOut = 0
+    // Up the side and across the top, until it starts down the far side
+    for (let t = 0; t < 4; t += DT) {
+      sim.step(DT, 0)
+      const floor = moverOffset(level.movers[0], sim.time)
+      furthestOut = Math.max(furthestOut, Math.abs(sim.pos.x - floor.x), floor.y - sim.pos.y - RADIUS)
+    }
+    expect(sim.pos.y).toBeLessThan(-580)
+    expect(sim.pos.x).toBeGreaterThan(380)
+    expect(furthestOut).toBeLessThan(50)
+  })
+
+  it('touching a live wire zaps the player, but an off wire and the rope passing through one are harmless', () => {
+    const fallThrough = (wire: WireData) => {
+      const sim = new Sim(buildLevel({ ...flat, start: [0, -300], wires: [wire] }))
+      run(sim, 1, 0)
+      return sim
+    }
+    const live = fallThrough({ from: [-200, -100], to: [200, -100] })
+    expect(live.dead?.cause).toBe('zapped')
+    expect(live.pos.y).toBeLessThan(-80)
+    const off = fallThrough({ from: [-200, -100], to: [200, -100], cycle: { period: 10, on: 1, offset: 5 } })
+    expect(off.dead).toBeNull()
+    expect(off.pos.y).toBeGreaterThan(0)
+
+    const sim = new Sim(buildLevel({ ...flat, shapes: [{ rect: [-500, -400, 1000, 100] }], wires: [{ from: [-200, -100], to: [200, -100] }] }))
+    sim.gravity = 0
+    sim.startLength = 1
+    sim.fire({ x: 0, y: -1 })
+    run(sim, 0.3, 0)
+    expect(sim.rope!.anchors[0].p.y).toBeLessThan(-290)
+    expect(sim.dead).toBeNull()
   })
 
   it('never lets the player or the rope pass through terrain during random play', () => {

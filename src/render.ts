@@ -1,7 +1,7 @@
 import { add, norm, scale, sub, type Vec } from './geom'
 import { gongCentre, restingGong } from './gong'
-import { gustStrength, type Level, type Poly, type Surface, type Theme, type Vine, type VineKind } from './level'
-import { flipperAngle, FLIPPER_RADIUS, GONG_CORD_LENGTH, LAUNCHER_HOLD_SECS, launcherRest, RADIUS, vinePoint, type Sim } from './sim'
+import { gustStrength, wireLive, wireWarmup, type Level, type Poly, type Surface, type Theme, type Vine, type VineKind } from './level'
+import { flipperAngle, FLIPPER_RADIUS, GONG_CORD_LENGTH, LAUNCHER_HOLD_SECS, launcherRest, RADIUS, vinePoint, WIRE_RADIUS, type Death, type Sim } from './sim'
 
 export type Camera = { pos: Vec; zoom: number }
 /** Transient visuals: the player's recent path (oldest first) and rings where the screen was tapped. */
@@ -10,6 +10,8 @@ export type Effects = {
   tapRings: { at: Vec; age: number }[]
   /** Set after falling into lava or icy water: where it happened and seconds since. */
   sinking?: { at: Vec; age: number }
+  /** Set after being zapped or crushed: how, where, and seconds since. */
+  struck?: Pick<Death, 'cause' | 'at'> & { age: number }
 }
 
 export const TAP_RING_SECS = 0.4
@@ -44,6 +46,11 @@ const BUMPER_LOOK = { fill: '#ff2f9a', core: '#ffd1ec', stroke: '#fff2fa' }
 const FLIPPER_LOOK = { fill: '#f4f6ff', stroke: '#36e0ff' }
 /** How long a launcher's chevrons blaze after it fires. */
 const LAUNCH_FLASH_SECS = 0.6
+const HAZARD = { yellow: '#f2c230', black: '#1d1d1d' }
+const PLATFORM_LOOK = { fill: '#6b737e', stroke: '#2a2e34', rivet: '#a5adb8' }
+const CRATE_LOOK = { fill: '#d9772b', stroke: '#6b3510', inside: '#3a2414' }
+/** How long before a pulsing wire goes live it starts to spit sparks, as a warning. */
+const WIRE_WARNING_SECS = 0.5
 
 type Rgb = [number, number, number]
 type Palette = {
@@ -56,6 +63,8 @@ type Palette = {
   caps: string | null
   /** A neon glow around terrain outlines. */
   glow: boolean
+  /** Yellow and black hazard stripes along the tops of terrain. */
+  hazard: boolean
   rope: string
   /** Trail colour at the player, fading to `trailFar` at its tail. */
   trailNear: Rgb
@@ -71,6 +80,7 @@ const PALETTES: Record<Theme, Palette> = {
     snow: false,
     caps: null,
     glow: false,
+    hazard: false,
     rope: '#e8c78a',
     trailNear: [255, 255, 255],
     trailFar: [80, 220, 255],
@@ -83,6 +93,7 @@ const PALETTES: Record<Theme, Palette> = {
     snow: false,
     caps: null,
     glow: false,
+    hazard: false,
     rope: '#8a5a32',
     trailNear: [255, 120, 170],
     trailFar: [120, 150, 255],
@@ -95,6 +106,7 @@ const PALETTES: Record<Theme, Palette> = {
     snow: true,
     caps: '#f2f8ff',
     glow: false,
+    hazard: false,
     rope: '#d9a066',
     trailNear: [255, 255, 255],
     trailFar: [255, 170, 90],
@@ -107,6 +119,7 @@ const PALETTES: Record<Theme, Palette> = {
     snow: false,
     caps: '#6cb83f',
     glow: false,
+    hazard: false,
     rope: '#f0d9a0',
     trailNear: [255, 250, 200],
     trailFar: [255, 140, 60],
@@ -119,9 +132,23 @@ const PALETTES: Record<Theme, Palette> = {
     snow: false,
     caps: null,
     glow: true,
+    hazard: false,
     rope: '#ffe066',
     trailNear: [255, 255, 255],
     trailFar: [255, 60, 200],
+  },
+  factory: {
+    sky: ['#121418', '#262a31', '#4a2f1e'],
+    terrainFill: '#454b54',
+    terrainStroke: '#22262c',
+    stars: false,
+    snow: false,
+    caps: null,
+    glow: false,
+    hazard: true,
+    rope: '#e8d9b0',
+    trailNear: [255, 255, 255],
+    trailFar: [255, 170, 40],
   },
 }
 
@@ -161,28 +188,35 @@ export function render(ctx: CanvasRenderingContext2D, w: number, h: number, cam:
   if (palette.snow) drawSnow(ctx, cam, w, h, time)
   if (level.theme === 'jungle') drawCanopyLight(ctx, cam, w, h, time)
   if (level.theme === 'pinball') drawPlayfieldLights(ctx, cam, w, h, time)
+  if (level.theme === 'factory') drawFactoryBackdrop(ctx, cam, w, h, time)
   ctx.translate(-cam.pos.x, -cam.pos.y)
 
   drawGusts(ctx, level, sim.time)
+  drawConveyors(ctx, level, sim.time)
   for (const trunk of level.trunks) drawTrunk(ctx, trunk, level)
   drawGong(ctx, level, sim)
   drawVines(ctx, level, sim)
+  // Behind terrain, so presses slide out of the roof
+  drawMovers(ctx, level, sim)
   drawTerrain(ctx, level, sim, palette)
   drawLaunchers(ctx, level, sim, time)
   drawFlippers(ctx, level, sim)
+  drawWires(ctx, level, sim.time, time)
   for (const flag of level.flags) drawFlag(ctx, flag, time)
   drawRope(ctx, sim, palette)
   if (level.theme === 'jungle') drawVineSnap(ctx, sim)
   else drawIcePuff(ctx, sim)
   drawTrail(ctx, fx.trail, palette)
   if (fx.sinking) drawSinkingPlayer(ctx, fx.sinking, level.theme, time)
+  else if (fx.struck) drawStruckPlayer(ctx, fx.struck, time)
   else drawPlayer(ctx, sim.pos, sim.vel, time, sim.boost === 'ramp')
   if (level.theme === 'lava') drawLava(ctx, level, cam, w, h, time)
   else if (level.theme === 'ice') drawWater(ctx, level, cam, w, h, time)
   else if (level.theme === 'jungle') drawRiver(ctx, level, cam, w, h, time)
   else if (level.theme === 'pinball') drawDrain(ctx, level, cam, w, h, time)
+  else if (level.theme === 'factory') drawVat(ctx, level, cam, w, h, time)
   else drawFog(ctx, level, cam, w, h)
-  if (fx.sinking && level.theme === 'lava') drawSplash(ctx, fx.sinking, level)
+  if (fx.sinking && (level.theme === 'lava' || level.theme === 'factory')) drawSplash(ctx, fx.sinking, level)
   if (fx.sinking && (level.theme === 'ice' || level.theme === 'jungle')) drawWaterSplash(ctx, fx.sinking, level, SPLASHES[level.theme])
   drawTapRings(ctx, fx.tapRings)
 
@@ -255,6 +289,8 @@ function drawTerrain(ctx: CanvasRenderingContext2D, level: Level, sim: Sim, pale
     else if (ice) drawIceSheen(ctx, poly, ice.sheen)
     else if (poly.foliage) drawLeafDapples(ctx, poly)
     else if (palette.caps) drawCaps(ctx, poly, palette.caps)
+    if (poly.belt) drawBelt(ctx, poly, sim.time)
+    else if (palette.hazard) drawHazardTops(ctx, poly)
     if (poly.ramp) drawRampStripe(ctx, poly)
     ctx.restore()
   })
@@ -1206,6 +1242,356 @@ function drawDrain(ctx: CanvasRenderingContext2D, level: Level, cam: Camera, w: 
       ctx.stroke()
     }
   }
+}
+
+/** Steel slabs edged in hazard stripes, and crates as open-topped bins, wherever they are now. */
+function drawMovers(ctx: CanvasRenderingContext2D, level: Level, sim: Sim) {
+  ctx.lineWidth = 3
+  ctx.lineJoin = 'round'
+  sim.movingPolys().forEach((poly, i) => {
+    const crate = 'conveyor' in level.movers[i]
+    const look = crate ? CRATE_LOOK : PLATFORM_LOOK
+    const [minX, maxX, minY, maxY] = bounds(poly)
+    ctx.beginPath()
+    poly.pts.forEach((p, k) => (k === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)))
+    ctx.closePath()
+    ctx.fillStyle = look.fill
+    ctx.strokeStyle = look.stroke
+    ctx.fill()
+    ctx.save()
+    ctx.clip()
+    if (crate) {
+      // Planks across the bin, and its dark inside
+      ctx.strokeStyle = 'rgba(80, 35, 5, 0.5)'
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      for (let y = minY + 16; y < maxY; y += 16) {
+        ctx.moveTo(minX, y)
+        ctx.lineTo(maxX, y)
+      }
+      ctx.stroke()
+    } else {
+      drawStripes(ctx, minX, minY, maxX - minX, Math.min(10, maxY - minY))
+      drawStripes(ctx, minX, maxY - Math.min(10, maxY - minY), maxX - minX, Math.min(10, maxY - minY))
+      ctx.fillStyle = PLATFORM_LOOK.rivet
+      for (let x = minX + 14; x < maxX - 8; x += 28) {
+        ctx.beginPath()
+        ctx.arc(x, (minY + maxY) / 2, 2.5, 0, Math.PI * 2)
+        ctx.fill()
+      }
+    }
+    ctx.restore()
+    ctx.lineWidth = 3
+    ctx.stroke()
+    if (crate) {
+      const inside = poly.pts.slice(1, 5)
+      ctx.fillStyle = CRATE_LOOK.inside
+      ctx.globalAlpha = 0.35
+      ctx.beginPath()
+      inside.forEach((p, k) => (k === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)))
+      ctx.closePath()
+      ctx.fill()
+      ctx.globalAlpha = 1
+    }
+  })
+}
+
+/** Each conveyor's track: a chain running round its loop behind the crates, with links moving at its speed. */
+function drawConveyors(ctx: CanvasRenderingContext2D, level: Level, time: number) {
+  for (const { loop, speed } of level.conveyors) {
+    ctx.lineJoin = 'round'
+    ctx.lineCap = 'round'
+    ctx.strokeStyle = '#2b2f36'
+    ctx.lineWidth = 16
+    ctx.beginPath()
+    loop.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)))
+    ctx.closePath()
+    ctx.stroke()
+    ctx.strokeStyle = '#7d8590'
+    ctx.lineWidth = 4
+    ctx.setLineDash([10, 10])
+    ctx.lineDashOffset = -(speed * time) % 20
+    ctx.stroke()
+    ctx.setLineDash([])
+    ctx.lineDashOffset = 0
+    ctx.fillStyle = '#9aa3ad'
+    for (const p of loop) {
+      ctx.beginPath()
+      ctx.arc(p.x, p.y, 12, 0, Math.PI * 2)
+      ctx.fill()
+    }
+  }
+}
+
+/** A rubber belt along the top of a conveyor, its treads moving the way it carries you, over a row of rollers. */
+function drawBelt(ctx: CanvasRenderingContext2D, poly: Poly, time: number) {
+  const [minX, maxX, minY] = bounds(poly)
+  ctx.fillStyle = '#1f2125'
+  ctx.fillRect(minX, minY, maxX - minX, 12)
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(minX, minY, maxX - minX, 12)
+  ctx.clip()
+  ctx.strokeStyle = '#f2c230'
+  ctx.lineWidth = 3
+  const shift = (((poly.belt * time) % 32) + 32) % 32
+  const lean = Math.sign(poly.belt) * 5
+  ctx.beginPath()
+  for (let x = minX - 32 + shift; x < maxX + 32; x += 32) {
+    ctx.moveTo(x - lean, minY + 2)
+    ctx.lineTo(x + lean, minY + 6)
+    ctx.lineTo(x - lean, minY + 10)
+  }
+  ctx.stroke()
+  ctx.restore()
+  ctx.fillStyle = '#8a929c'
+  for (let x = minX + 16; x < maxX - 8; x += 32) {
+    ctx.beginPath()
+    ctx.arc(x, minY + 20, 5, 0, Math.PI * 2)
+    ctx.fill()
+  }
+}
+
+/**
+ * Wires strung between insulators: a live one glows and crackles with arcs, an off one hangs dark, and one about to
+ * go live spits sparks as a warning.
+ */
+function drawWires(ctx: CanvasRenderingContext2D, level: Level, simTime: number, time: number) {
+  ctx.lineCap = 'round'
+  for (const wire of level.wires) {
+    const { from, to } = wire
+    const live = wireLive(wire, simTime)
+    const warmup = wireWarmup(wire, simTime)
+    ctx.strokeStyle = live ? 'rgba(120, 220, 255, 0.35)' : '#5a606a'
+    ctx.lineWidth = live ? 14 : WIRE_RADIUS * 2
+    ctx.beginPath()
+    ctx.moveTo(from.x, from.y)
+    ctx.lineTo(to.x, to.y)
+    ctx.stroke()
+    if (live) {
+      ctx.strokeStyle = '#e8faff'
+      ctx.lineWidth = WIRE_RADIUS * 2 - 1
+      ctx.stroke()
+      drawArc(ctx, from, to, time, '#7fe3ff')
+      drawArc(ctx, from, to, time + 0.37, '#ffffff')
+    } else if (warmup < WIRE_WARNING_SECS && Math.sin(time * 60) > 0) {
+      drawSparks(ctx, from, to, time, 4)
+    }
+    ctx.fillStyle = '#c9b48a'
+    for (const end of [from, to]) {
+      ctx.beginPath()
+      ctx.arc(end.x, end.y, 7, 0, Math.PI * 2)
+      ctx.fill()
+    }
+  }
+}
+
+/** A jagged bolt along a wire that jumps about several times a second. */
+function drawArc(ctx: CanvasRenderingContext2D, from: Vec, to: Vec, time: number, colour: string) {
+  const flicker = Math.floor(time * 18)
+  const along = sub(to, from)
+  const across = norm({ x: -along.y, y: along.x })
+  const kinks = Math.max(3, Math.round(Math.hypot(along.x, along.y) / 30))
+  ctx.strokeStyle = colour
+  ctx.lineWidth = 1.5
+  ctx.beginPath()
+  for (let k = 0; k <= kinks; k++) {
+    const jag = k === 0 || k === kinks ? 0 : (hash(flicker * 7.1 + k * 3.3) - 0.5) * 14
+    const p = add(from, add(scale(along, k / kinks), scale(across, jag)))
+    if (k === 0) ctx.moveTo(p.x, p.y)
+    else ctx.lineTo(p.x, p.y)
+  }
+  ctx.stroke()
+}
+
+/** A few bright sparks spitting from random points along a segment. */
+function drawSparks(ctx: CanvasRenderingContext2D, from: Vec, to: Vec, time: number, count: number) {
+  const flicker = Math.floor(time * 20)
+  ctx.strokeStyle = '#fff3a0'
+  ctx.lineWidth = 2
+  ctx.beginPath()
+  for (let i = 0; i < count; i++) {
+    const at = add(from, scale(sub(to, from), hash(flicker * 1.7 + i * 5.1)))
+    const angle = hash(flicker * 3.9 + i) * Math.PI * 2
+    ctx.moveTo(at.x, at.y)
+    ctx.lineTo(at.x + Math.cos(angle) * 12, at.y + Math.sin(angle) * 12)
+  }
+  ctx.stroke()
+}
+
+/** Diagonal yellow and black hazard stripes filling a box. */
+function drawStripes(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number) {
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(x, y, w, h)
+  ctx.clip()
+  ctx.fillStyle = HAZARD.yellow
+  ctx.fillRect(x, y, w, h)
+  ctx.fillStyle = HAZARD.black
+  for (let sx = x - h; sx < x + w; sx += 20) {
+    ctx.beginPath()
+    ctx.moveTo(sx, y + h)
+    ctx.lineTo(sx + h, y)
+    ctx.lineTo(sx + h + 10, y)
+    ctx.lineTo(sx + 10, y + h)
+    ctx.closePath()
+    ctx.fill()
+  }
+  ctx.restore()
+}
+
+/** Hazard stripes painted along the upward-facing edges of factory terrain. */
+function drawHazardTops(ctx: CanvasRenderingContext2D, poly: Poly) {
+  ctx.lineCap = 'butt'
+  for (const [colour, dash] of [[HAZARD.yellow, []], [HAZARD.black, [10, 10]]] as const) {
+    ctx.strokeStyle = colour
+    ctx.lineWidth = 6
+    ctx.setLineDash(dash)
+    ctx.beginPath()
+    poly.pts.forEach((a, i) => {
+      if (poly.edgeNormals[i].y > -0.5) return
+      const b = poly.pts[(i + 1) % poly.pts.length]
+      ctx.moveTo(a.x, a.y + 3)
+      ctx.lineTo(b.x, b.y + 3)
+    })
+    ctx.stroke()
+  }
+  ctx.setLineDash([])
+}
+
+/** Girders, pipes and chains in the gloom behind everything, with steam rising and the odd shower of welding sparks. */
+function drawFactoryBackdrop(ctx: CanvasRenderingContext2D, cam: Camera, w: number, h: number, time: number) {
+  const halfW = w / 2 / cam.zoom
+  const halfH = h / 2 / cam.zoom
+  const parallax = 0.3
+  const shift = { x: cam.pos.x * parallax, y: cam.pos.y * parallax }
+  const spacing = 420
+  ctx.strokeStyle = 'rgba(70, 76, 86, 0.5)'
+  ctx.lineWidth = 10
+  ctx.beginPath()
+  for (let i = Math.floor((shift.x - halfW) / spacing) - 1; i * spacing < shift.x + halfW + spacing; i++) {
+    // A column with cross-bracing, and a beam across the top
+    const x = i * spacing - shift.x
+    ctx.moveTo(x, -halfH)
+    ctx.lineTo(x, halfH)
+    ctx.moveTo(x + 40, -halfH)
+    ctx.lineTo(x + 40, halfH)
+    for (let y = -halfH - (shift.y % 120) - 120; y < halfH; y += 120) {
+      ctx.moveTo(x, y)
+      ctx.lineTo(x + 40, y + 60)
+      ctx.lineTo(x, y + 120)
+    }
+  }
+  const beamY = -200 - shift.y
+  ctx.moveTo(-halfW, beamY)
+  ctx.lineTo(halfW, beamY)
+  ctx.stroke()
+  ctx.strokeStyle = 'rgba(90, 70, 50, 0.4)'
+  ctx.lineWidth = 18
+  ctx.beginPath()
+  ctx.moveTo(-halfW, 260 - shift.y)
+  ctx.lineTo(halfW, 260 - shift.y)
+  ctx.stroke()
+
+  for (let i = 0; i < 6; i++) {
+    const x = ((((hash(i * 4.3) * 2400 - cam.pos.x * 0.5) % 2400) + 2400) % 2400) - 1200
+    for (let k = 0; k < 4; k++) {
+      const t = (time * 0.4 + k / 4 + hash(i)) % 1
+      const [px, py, r] = [x + Math.sin(t * 5 + i) * 15, halfH - t * halfH * 1.6, 20 + 50 * t]
+      const puff = ctx.createRadialGradient(px, py, 0, px, py, r)
+      puff.addColorStop(0, `rgba(200, 205, 215, ${0.14 * (1 - t)})`)
+      puff.addColorStop(1, 'rgba(200, 205, 215, 0)')
+      ctx.fillStyle = puff
+      ctx.fillRect(px - r, py - r, r * 2, r * 2)
+    }
+  }
+
+  for (let i = 0; i < 3; i++) {
+    const burst = Math.floor(time / 2.3 + i * 0.37)
+    const age = (time / 2.3 + i * 0.37 - burst) * 2.3
+    if (age > 0.8) continue
+    const x = ((((hash(burst * 2.1 + i) * 2000 - cam.pos.x * 0.3) % 2000) + 2000) % 2000) - 1000
+    const y = (hash(burst * 5.7 + i) - 0.6) * halfH
+    for (let k = 0; k < 10; k++) {
+      const angle = Math.PI * (0.2 + 0.6 * hash(k * 3.1 + burst))
+      const speed = 150 + hash(k * 7.7 + burst) * 200
+      const sx = x + Math.cos(angle) * speed * age * (k % 2 ? 1 : -1)
+      const sy = y + Math.sin(angle) * speed * age * 0.3 + 0.5 * 900 * age * age
+      ctx.fillStyle = `rgba(255, ${200 - Math.round(age * 120)}, 80, ${1 - age / 0.8})`
+      ctx.fillRect(sx, sy, 3, 3)
+    }
+  }
+}
+
+/** For factory levels: a vat of molten metal glowing white-hot, with slag drifting on it. */
+function drawVat(ctx: CanvasRenderingContext2D, level: Level, cam: Camera, w: number, h: number, time: number) {
+  const left = cam.pos.x - w / 2 / cam.zoom - 20
+  const right = cam.pos.x + w / 2 / cam.zoom + 20
+  const bottom = cam.pos.y + h / 2 / cam.zoom + 20
+  if (bottom < level.deathY - 20) return
+  const surface = (x: number) => level.deathY + Math.sin(x * 0.015 + time * 1.4) * 3 + Math.sin(x * 0.04 - time * 1.1) * 1.5
+  const grad = ctx.createLinearGradient(0, level.deathY - 10, 0, level.deathY + 200)
+  grad.addColorStop(0, '#fff6c8')
+  grad.addColorStop(0.1, '#ffb030')
+  grad.addColorStop(1, '#8a2a05')
+  ctx.fillStyle = grad
+  ctx.beginPath()
+  ctx.moveTo(left, Math.max(bottom, level.deathY + 40))
+  const step = 24
+  for (let x = Math.floor(left / step) * step; x <= right + step; x += step) ctx.lineTo(x, surface(x))
+  ctx.lineTo(right + step, Math.max(bottom, level.deathY + 40))
+  ctx.closePath()
+  ctx.fill()
+
+  const spacing = 200
+  const drift = time * 25
+  ctx.fillStyle = 'rgba(70, 30, 15, 0.55)'
+  for (let i = Math.floor((left - drift) / spacing) - 1; i * spacing + drift < right; i++) {
+    if (hash(i * 2.9) < 0.4) continue
+    const x = i * spacing + drift + hash(i * 6.7) * spacing * 0.5
+    ctx.beginPath()
+    ctx.ellipse(x, surface(x) + 4, 20 + hash(i * 1.3) * 30, 3, 0, 0, Math.PI * 2)
+    ctx.fill()
+  }
+}
+
+/** The ninja after a zap, flashing blue-white with sparks flying off, then left scorched; or squashed flat by a press. */
+function drawStruckPlayer(ctx: CanvasRenderingContext2D, { cause, at, age }: NonNullable<Effects['struck']>, time: number) {
+  if (cause === 'crushed') {
+    ctx.save()
+    ctx.translate(at.x, at.y)
+    ctx.scale(1.7, 0.35)
+    drawPlayer(ctx, { x: 0, y: 0 }, { x: 0, y: 0 }, time)
+    ctx.restore()
+    return
+  }
+  const shock = Math.max(0, 1 - age / 0.9)
+  drawPlayer(ctx, at, { x: 0, y: 0 }, time)
+  ctx.fillStyle = Math.sin(age * 70) > 0 && shock > 0 ? `rgba(200, 240, 255, ${0.85 * shock})` : `rgba(25, 15, 10, ${Math.min(0.75, age)})`
+  ctx.beginPath()
+  ctx.arc(at.x, at.y, RADIUS + 1, 0, Math.PI * 2)
+  ctx.fill()
+  if (shock > 0) {
+    for (let i = 0; i < 6; i++) {
+      const angle = (i / 6) * Math.PI * 2 + age * 9
+      drawArc(ctx, at, add(at, { x: Math.cos(angle) * (30 + 20 * shock), y: Math.sin(angle) * (30 + 20 * shock) }), time + i, '#bfefff')
+    }
+  }
+  // A wisp of smoke rising off the scorched ninja
+  for (let i = 0; i < 4; i++) {
+    const t = age - i * 0.25
+    if (t <= 0 || t > 1.5) continue
+    ctx.fillStyle = `rgba(80, 80, 85, ${0.5 * (1 - t / 1.5)})`
+    ctx.beginPath()
+    ctx.arc(at.x + Math.sin(t * 4 + i) * 6, at.y - 14 - t * 60, 6 + t * 14, 0, Math.PI * 2)
+    ctx.fill()
+  }
+}
+
+function bounds(poly: Poly): [minX: number, maxX: number, minY: number, maxY: number] {
+  const xs = poly.pts.map((p) => p.x)
+  const ys = poly.pts.map((p) => p.y)
+  return [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)]
 }
 
 function hash(n: number): number {

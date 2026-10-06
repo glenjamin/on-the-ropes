@@ -3,7 +3,7 @@ import { buildLevel, type Level, type Theme } from './level'
 import { LEVELS, SETS } from './levels'
 import { cameraFocus, render, TAP_RING_SECS, zoomFor, type Camera } from './render'
 import { playStep, SUBSTEP, TIME_SCALE } from './pace'
-import { RADIUS, Sim } from './sim'
+import { RADIUS, Sim, type Death } from './sim'
 
 const MAX_FRAME = 0.1
 const TRAIL_SECS = 1.8
@@ -27,7 +27,10 @@ const DEATHS: Record<Theme, { message: string; sinks: boolean }> = {
   ice: { message: 'Frozen solid', sinks: true },
   jungle: { message: 'Swept downriver', sinks: true },
   pinball: { message: 'Drained', sinks: false },
+  factory: { message: 'Smelted', sinks: true },
 }
+/** What dying other than by falling says. */
+const STRUCK_DOWN: Record<Death['cause'], string> = { zapped: 'Zapped', crushed: 'Flattened' }
 /** Best time per level id; a level counts as completed once it has one. */
 const PROGRESS_KEY = 'on-the-ropes:progress'
 const LAST_LEVEL_KEY = 'on-the-ropes:last-level'
@@ -131,9 +134,10 @@ function frame(now: number) {
       pendingWinCard = null
     }
   } else if (phase === 'dead') {
-    const death = DEATHS[level.theme]
-    if (!death.sinks) plummet(dt)
-    if (phaseTime > DEATH_CARD_DELAY && !overlay.classList.contains('show')) showOverlay(`<h1>${death.message}</h1>`)
+    const fall = DEATHS[level.theme]
+    if (!fall.sinks && !sim.dead) plummet(dt)
+    const message = sim.dead ? STRUCK_DOWN[sim.dead.cause] : fall.message
+    if (phaseTime > DEATH_CARD_DELAY && !overlay.classList.contains('show')) showOverlay(`<h1>${message}</h1>`)
     if (phaseTime > RESPAWN_DELAY) respawn()
   }
 
@@ -145,6 +149,7 @@ function frame(now: number) {
     trail: trail.map((s) => s.p),
     tapRings: tapRings.map((r) => ({ at: r.at, age: t - r.t })),
     sinking: sunkAt ? { at: sunkAt, age: phaseTime } : undefined,
+    struck: phase === 'dead' && sim.dead ? { ...sim.dead, age: phaseTime } : undefined,
   }
   render(ctx, canvas.width / devicePixelRatio, canvas.height / devicePixelRatio, cam, level, sim, fx, t)
   timeEl.textContent = runTime.toFixed(2)
@@ -155,7 +160,7 @@ function update(dt: number) {
   stepSim(dt)
   if (running) runTime += dt
 
-  if (sim.pos.y + RADIUS > level.deathY) die()
+  if (sim.dead || sim.pos.y + RADIUS > level.deathY) die()
   else if (dist(sim.pos, level.goal.pos) < level.goal.radius + RADIUS) win()
 }
 
@@ -163,7 +168,7 @@ function die() {
   phase = 'dead'
   phaseTime = 0
   sim.release()
-  if (DEATHS[level.theme].sinks) sunkAt = { x: sim.pos.x, y: level.deathY - RADIUS }
+  if (DEATHS[level.theme].sinks && !sim.dead) sunkAt = { x: sim.pos.x, y: level.deathY - RADIUS }
 }
 
 function respawn() {
