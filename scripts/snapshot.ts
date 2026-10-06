@@ -10,8 +10,9 @@ const SCENARIOS = [
   { name: 'hook-flying', query: 'ang=-1.2&secs=0.08' },
   { name: 'swing', query: 'ang=-1.1&reel=-120&secs=2' },
   { name: 'bend', query: 'ang=-0.9&reel=-120&secs=8&until=bend' },
-  ...(await levelIds()).map((id) => ({ name: `overview-${id}`, query: `level=${id}&overview` })),
-  ...(await tracedLevelIds()).map((id) => ({ name: `route-${id}`, query: `level=${id}&overview&route` })),
+  // Whole-level views look the same at any phone size, so they only need one
+  ...(await levelIds()).map((id) => ({ name: `overview-${id}`, query: `level=${id}&overview`, oneSize: true })),
+  ...(await tracedLevelIds()).map((id) => ({ name: `route-${id}`, query: `level=${id}&overview&route`, oneSize: true })),
 ]
 
 const VIEWPORTS = [
@@ -24,7 +25,7 @@ await mkdir(OUT_DIR, { recursive: true })
 
 await withBrowser(async (browser, baseUrl) => {
   for (const scenario of SCENARIOS.filter((s) => s.name.includes(filter))) {
-    for (const vp of VIEWPORTS) {
+    for (const vp of 'oneSize' in scenario ? VIEWPORTS.slice(0, 1) : VIEWPORTS) {
       const page = await browser.newPage({ viewport: { width: vp.width, height: vp.height }, deviceScaleFactor: 2 })
       const errors: string[] = []
       page.on('pageerror', (e) => errors.push(e.message))
