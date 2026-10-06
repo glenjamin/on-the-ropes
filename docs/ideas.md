@@ -19,6 +19,12 @@
 - The hook glances off crates rather than catching, so that the crate lift in 6-4 has to be ridden; otherwise the rope could climb the column of crates like a ladder
 - Wires are deadly only to the player: the rope passes through them, insulated. A pulsing wire spits sparks for a moment before it goes live
 - A platform only crushes you when it squeezes you against something else; one sweeping through a swing knocks you aside, carrying its speed into the bounce
+- Space (set 7) is unplayed. Each level sets its own lower gravity (`gravity` in 7-1 to 7-5, falling from 1500 to 900 against the usual 2000). Things to try: how fast a caught planet spins and how quickly it gets there (`PLANET_SPIN`, `PLANET_SPIN_UP_SECS`), how hard it pushes you round to keep up (`PLANET_WHIRL`), how long it keeps spinning after you let go (`PLANET_SPIN_DECAY`), how close it reels you in (`PLANET_ROPE_MIN`), the planet rope's feel (`PLANET_ROPE_STIFFNESS`, `PLANET_ROPE_DAMPING`, `PLANET_START_LENGTH`), how fast a fling can go (`PLANET_MAX_SPEED`) and how hard black holes pull (`BLACK_HOLE_PULL`), all in `src/sim.ts`
+- Planets spin a fixed way each, shown by arrows round them, so one spinning against your swing yanks you backwards; catch it from the other side. A rope caught on a planet wraps round its surface when you fall behind it, but doesn't wrap round other terrain corners from there. Planets have no gravity of their own, so the black holes are the only thing that bends a flight
+- You orbit a planet about a radius out from its surface, so a bigger planet whirls you faster and flings you further. The planet-only gaps (in 7-2, and across the black holes in 7-3, 7-4 and 7-5) were checked by turning every planet to rock and seeing the bot fail; lower gravity carries a rock swing further, so those gaps widen through the set, and retuning the planets means re-checking them
+- After letting go the bot waits at most 0.6s before tapping again, so on a long planet fling it often re-grabs the planet until a release lines up; its grab counts on 7-2 overstate how fiddly the level is
+- Black holes pull on the player but not on the hook, which flies straight and is lost if it flies into one; they stop pulling once the gong is struck
+- The bot treats coming near a black hole like skimming the death line, and taps round each planet's surface; it knows each planet's spin direction only by simulating
 
 ## Ideas for later sets
 

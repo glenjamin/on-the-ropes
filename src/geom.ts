@@ -15,6 +15,11 @@ export function norm(a: Vec): Vec {
   return l > 1e-9 ? { x: a.x / l, y: a.y / l } : { x: 0, y: 0 }
 }
 
+/** The same angle, between -π and π. */
+export function wrapAngle(angle: number): number {
+  return angle - 2 * Math.PI * Math.round(angle / (2 * Math.PI))
+}
+
 export function closestOnSegment(p: Vec, a: Vec, b: Vec): Vec {
   const ab = sub(b, a)
   const t = Math.max(0, Math.min(1, dot(sub(p, a), ab) / dot(ab, ab)))

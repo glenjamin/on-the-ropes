@@ -29,6 +29,11 @@ import level6_2 from './6-2'
 import level6_3 from './6-3'
 import level6_4 from './6-4'
 import level6_5 from './6-5'
+import level7_1 from './7-1'
+import level7_2 from './7-2'
+import level7_3 from './7-3'
+import level7_4 from './7-4'
+import level7_5 from './7-5'
 
 /** Levels grouped into sets; each set gets harder as it goes, and the next set introduces something new. */
 export const SETS: { name: string; levels: LevelData[] }[] = [
@@ -38,6 +43,7 @@ export const SETS: { name: string; levels: LevelData[] }[] = [
   { name: 'Jungle', levels: [level4_1, level4_2, level4_3, level4_4, level4_5] },
   { name: 'Pinball', levels: [level5_1, level5_2, level5_3, level5_4, level5_5] },
   { name: 'Factory', levels: [level6_1, level6_2, level6_3, level6_4, level6_5] },
+  { name: 'Space', levels: [level7_1, level7_2, level7_3, level7_4, level7_5] },
 ]
 
 /** Every level in play order. Ids are "set-position", e.g. "1-4" is the fourth level of the first set. */

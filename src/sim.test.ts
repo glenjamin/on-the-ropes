@@ -500,6 +500,81 @@ describe('swinging on the rope', () => {
     expect(sim.dead).toBeNull()
   })
 
+  it('a level can set its own gravity, which the player falls under', () => {
+    const fallen = (gravity?: number) => {
+      const sim = new Sim(buildLevel({ ...flat, gravity }))
+      run(sim, 0.4, 0)
+      return sim.pos.y
+    }
+    expect(fallen(1000) / fallen()).toBeCloseTo(0.5, 2)
+  })
+
+  it('grabbing a planet spins it up, carrying the rope round with its surface and the player round with it', () => {
+    const sim = new Sim(buildLevel({ ...flat, gravity: 1000, planets: [{ at: [0, -300], r: 80, spin: 'ccw' }] }))
+    sim.fire({ x: 0, y: -1 })
+    while (!sim.rope) sim.step(DT, 0)
+    expect(sim.planets[0].spin).toBeCloseTo(0, 1)
+    const around = (p: Vec) => Math.atan2(p.y + 300, p.x)
+    const caughtAt = around(sim.rope!.anchors[0].p)
+
+    // Anticlockwise on screen, the bottom of the planet heads right and the player is carried round its right side
+    run(sim, 0.6, -200)
+    expect(sim.planets[0].spin).toBeLessThan(-3)
+    expect(caughtAt - around(sim.rope!.anchors[0].p)).toBeGreaterThan(1)
+    expect(sim.pos.x).toBeGreaterThan(100)
+    expect(sim.pos.y).toBeLessThan(-150)
+
+    sim.release()
+    const spinning = sim.planets[0].spin
+    run(sim, 1, 0)
+    expect(sim.planets[0].spin).toBeLessThan(0)
+    expect(sim.planets[0].spin).toBeGreaterThan(spinning)
+    sim.reset()
+    expect(sim.planets[0]).toEqual({ angle: 0, spin: 0 })
+  })
+
+  it('a spinning planet flings the player further than a rock of the same size, and faster than the usual limit', () => {
+    const furthest = (anchor: Pick<LevelData, 'shapes' | 'planets'>) => {
+      let best = { reach: -Infinity, fastest: 0 }
+      for (let hold = 0.1; hold < 2.5; hold += 0.05) {
+        const sim = new Sim(buildLevel({ ...flat, gravity: 1200, ...anchor }))
+        sim.vel = { x: 300, y: -200 }
+        sim.fire({ x: 300, y: -300 })
+        let fastest = 0
+        for (let t = 0; t < hold; t += DT) {
+          sim.step(DT, -200)
+          fastest = Math.max(fastest, Math.hypot(sim.vel.x, sim.vel.y))
+        }
+        sim.release()
+        while (sim.pos.y < 500) sim.step(DT, 0)
+        if (sim.pos.x > best.reach) best = { reach: sim.pos.x, fastest }
+      }
+      return best
+    }
+    const planet = furthest({ shapes: [], planets: [{ at: [300, -300], r: 90, spin: 'ccw' }] })
+    const rock = furthest({ shapes: [bumperless(bumper(300, -300, 90))] })
+    expect(planet.reach).toBeGreaterThan(rock.reach + 400)
+    expect(planet.fastest).toBeGreaterThan(1000)
+    expect(rock.fastest).toBeLessThanOrEqual(900 + 1e-6)
+  })
+
+  it('a black hole bends a passing flight towards it, and swallows the player who touches it', () => {
+    const passing = (blackHoles: LevelData['blackHoles']) => {
+      const sim = new Sim(buildLevel({ ...flat, gravity: 0, start: [-600, 0], blackHoles }))
+      sim.vel = { x: 600, y: 0 }
+      run(sim, 2, 0)
+      return sim
+    }
+    const missed = passing([{ at: [0, 250], horizon: 40 }])
+    expect(missed.dead).toBeNull()
+    expect(missed.pos.y).toBeGreaterThan(150)
+    expect(passing([]).pos.y).toBeCloseTo(0, 6)
+
+    const hit = passing([{ at: [0, 0], horizon: 40 }])
+    expect(hit.dead?.cause).toBe('swallowed')
+    expect(hit.pos.x).toBeLessThan(0)
+  })
+
   it('never lets the player or the rope pass through terrain during random play', () => {
     const stats = randomPlay(400)
     expect(stats.attaches).toBeGreaterThan(200)
@@ -523,6 +598,11 @@ const leftFlipper: FlipperData = { pivot: [0, 0], length: 150, rest: 30, swing: 
 
 /** An empty level to build test terrain into. */
 const flat: LevelData = { id: 't', name: 't', theme: 'ice', start: [0, 0], goal: [9000, 0], deathY: 1e6, shapes: [] }
+
+/** A bumper's round shape as plain rock. */
+function bumperless(shape: Shape): Shape {
+  return { ...shape, bumper: false }
+}
 
 /** A player hooked straight up onto a ceiling of the given surface. */
 function hangUnder(surface: Surface): Sim {

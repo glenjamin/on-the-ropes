@@ -1,6 +1,6 @@
-import { add, norm, scale, sub, type Vec } from './geom'
+import { add, norm, scale, sub, wrapAngle, type Vec } from './geom'
 import { gongCentre, restingGong } from './gong'
-import { gustStrength, wireLive, wireWarmup, type Level, type Poly, type Surface, type Theme, type Vine, type VineKind } from './level'
+import { gustStrength, wireLive, wireWarmup, type BlackHole, type Level, type Planet, type Poly, type Surface, type Theme, type Vine, type VineKind } from './level'
 import { flipperAngle, FLIPPER_RADIUS, GONG_CORD_LENGTH, LAUNCHER_HOLD_SECS, launcherRest, RADIUS, vinePoint, WIRE_RADIUS, type Death, type Sim } from './sim'
 
 export type Camera = { pos: Vec; zoom: number }
@@ -12,6 +12,8 @@ export type Effects = {
   sinking?: { at: Vec; age: number }
   /** Set after being zapped or crushed: how, where, and seconds since. */
   struck?: Pick<Death, 'cause' | 'at'> & { age: number }
+  /** Set after falling into the void: seconds since. */
+  adrift?: number
 }
 
 export const TAP_RING_SECS = 0.4
@@ -51,6 +53,16 @@ const PLATFORM_LOOK = { fill: '#6b737e', stroke: '#2a2e34', rivet: '#a5adb8' }
 const CRATE_LOOK = { fill: '#d9772b', stroke: '#6b3510', inside: '#3a2414' }
 /** How long before a pulsing wire goes live it starts to spit sparks, as a warning. */
 const WIRE_WARNING_SECS = 0.5
+/** Each planet's colours, picked by its place in the level: base, band and shadow. */
+const PLANET_LOOKS = [
+  { base: '#d9894a', band: '#f2c18a', shade: '#5a2a18' },
+  { base: '#4fa3c7', band: '#a7e3f0', shade: '#183a5a' },
+  { base: '#9a6fd0', band: '#d6b8ff', shade: '#352060' },
+  { base: '#6dbb6a', band: '#c4ee9a', shade: '#1f4a2a' },
+  { base: '#c75a6a', band: '#f2a8b0', shade: '#4a1824' },
+]
+/** How long being swallowed by a black hole takes to play out. */
+const SWALLOW_SECS = 0.9
 
 type Rgb = [number, number, number]
 type Palette = {
@@ -150,6 +162,19 @@ const PALETTES: Record<Theme, Palette> = {
     trailNear: [255, 255, 255],
     trailFar: [255, 170, 40],
   },
+  space: {
+    sky: ['#03020c', '#0b0826', '#1a0f33'],
+    terrainFill: '#4a4458',
+    terrainStroke: '#9a90b4',
+    stars: false,
+    snow: false,
+    caps: null,
+    glow: false,
+    hazard: false,
+    rope: '#cfe8ff',
+    trailNear: [255, 255, 255],
+    trailFar: [150, 110, 255],
+  },
 }
 
 const STARS = Array.from({ length: 140 }, (_, i) => ({
@@ -189,7 +214,10 @@ export function render(ctx: CanvasRenderingContext2D, w: number, h: number, cam:
   if (level.theme === 'jungle') drawCanopyLight(ctx, cam, w, h, time)
   if (level.theme === 'pinball') drawPlayfieldLights(ctx, cam, w, h, time)
   if (level.theme === 'factory') drawFactoryBackdrop(ctx, cam, w, h, time)
+  if (level.theme === 'space') drawSpaceBackdrop(ctx, cam, w, h, time)
   ctx.translate(-cam.pos.x, -cam.pos.y)
+
+  drawBlackHoles(ctx, level, time)
 
   drawGusts(ctx, level, sim.time)
   drawConveyors(ctx, level, sim.time)
@@ -199,22 +227,25 @@ export function render(ctx: CanvasRenderingContext2D, w: number, h: number, cam:
   // Behind terrain, so presses slide out of the roof
   drawMovers(ctx, level, sim)
   drawTerrain(ctx, level, sim, palette)
+  drawPlanets(ctx, level, sim)
   drawLaunchers(ctx, level, sim, time)
   drawFlippers(ctx, level, sim)
   drawWires(ctx, level, sim.time, time)
   for (const flag of level.flags) drawFlag(ctx, flag, time)
-  drawRope(ctx, sim, palette)
+  drawRope(ctx, level, sim, palette)
   if (level.theme === 'jungle') drawVineSnap(ctx, sim)
   else drawIcePuff(ctx, sim)
   drawTrail(ctx, fx.trail, palette)
   if (fx.sinking) drawSinkingPlayer(ctx, fx.sinking, level.theme, time)
-  else if (fx.struck) drawStruckPlayer(ctx, fx.struck, time)
+  else if (fx.struck) drawStruckPlayer(ctx, fx.struck, level, time)
+  else if (fx.adrift !== undefined) drawDriftingPlayer(ctx, sim.pos, fx.adrift, time)
   else drawPlayer(ctx, sim.pos, sim.vel, time, sim.boost === 'ramp')
   if (level.theme === 'lava') drawLava(ctx, level, cam, w, h, time)
   else if (level.theme === 'ice') drawWater(ctx, level, cam, w, h, time)
   else if (level.theme === 'jungle') drawRiver(ctx, level, cam, w, h, time)
   else if (level.theme === 'pinball') drawDrain(ctx, level, cam, w, h, time)
   else if (level.theme === 'factory') drawVat(ctx, level, cam, w, h, time)
+  else if (level.theme === 'space') drawVoid(ctx, level, cam, w, h)
   else drawFog(ctx, level, cam, w, h)
   if (fx.sinking && (level.theme === 'lava' || level.theme === 'factory')) drawSplash(ctx, fx.sinking, level)
   if (fx.sinking && (level.theme === 'ice' || level.theme === 'jungle')) drawWaterSplash(ctx, fx.sinking, level, SPLASHES[level.theme])
@@ -289,6 +320,7 @@ function drawTerrain(ctx: CanvasRenderingContext2D, level: Level, sim: Sim, pale
     else if (ice) drawIceSheen(ctx, poly, ice.sheen)
     else if (poly.foliage) drawLeafDapples(ctx, poly)
     else if (palette.caps) drawCaps(ctx, poly, palette.caps)
+    else if (level.theme === 'space') drawCraters(ctx, poly)
     if (poly.belt) drawBelt(ctx, poly, sim.time)
     else if (palette.hazard) drawHazardTops(ctx, poly)
     if (poly.ramp) drawRampStripe(ctx, poly)
@@ -296,14 +328,23 @@ function drawTerrain(ctx: CanvasRenderingContext2D, level: Level, sim: Sim, pale
   })
 }
 
-function drawRope(ctx: CanvasRenderingContext2D, sim: Sim, palette: Palette) {
+function drawRope(ctx: CanvasRenderingContext2D, level: Level, sim: Sim, palette: Palette) {
   ctx.strokeStyle = palette.rope
   ctx.lineWidth = 2.5
   ctx.lineCap = 'round'
   if (sim.rope) {
     const anchors = sim.rope.anchors
+    const caught = sim.rope.caught
     ctx.beginPath()
     ctx.moveTo(anchors[0].p.x, anchors[0].p.y)
+    // Round the planet's surface to where the rope leaves it
+    if ('planet' in caught && anchors.length === 1) {
+      const planet = level.planets[caught.planet]
+      const from = sim.planets[caught.planet].angle + caught.angle
+      const leaves = sim.planetWrap(caught).leaves
+      const to = from + wrapAngle(Math.atan2(leaves.y - planet.at.y, leaves.x - planet.at.x) - from)
+      ctx.arc(planet.at.x, planet.at.y, planet.r + 1.5, from, to, to < from)
+    }
     for (const a of anchors.slice(1)) ctx.lineTo(a.p.x, a.p.y)
     ctx.lineTo(sim.pos.x, sim.pos.y)
     ctx.stroke()
@@ -1006,6 +1047,30 @@ function drawLeafDapples(ctx: CanvasRenderingContext2D, poly: Poly) {
   ctx.restore()
 }
 
+/** Pockmarks scattered over asteroid rock, each a dark bowl with a lit rim on its lower edge. */
+function drawCraters(ctx: CanvasRenderingContext2D, poly: Poly) {
+  const [minX, maxX, minY, maxY] = bounds(poly)
+  ctx.save()
+  ctx.clip()
+  for (let x = minX; x < maxX; x += 46) {
+    for (let y = minY; y < maxY; y += 46) {
+      const n = hash(x * 0.71 + y * 0.29)
+      if (n < 0.55) continue
+      const [cx, cy, r] = [x + hash(x + y * 3.1) * 30, y + hash(x * 2.3 - y) * 30, 4 + (n - 0.55) * 26]
+      ctx.fillStyle = 'rgba(20, 15, 35, 0.35)'
+      ctx.beginPath()
+      ctx.arc(cx, cy, r, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.strokeStyle = 'rgba(200, 190, 230, 0.25)'
+      ctx.lineWidth = 1.5
+      ctx.beginPath()
+      ctx.arc(cx, cy, r, 0.2, Math.PI - 0.2)
+      ctx.stroke()
+    }
+  }
+  ctx.restore()
+}
+
 /** Far-off trunks with a little parallax, and shafts and specks of sunlight that shimmer through the canopy. */
 function drawCanopyLight(ctx: CanvasRenderingContext2D, cam: Camera, w: number, h: number, time: number) {
   const halfW = w / 2 / cam.zoom
@@ -1556,7 +1621,11 @@ function drawVat(ctx: CanvasRenderingContext2D, level: Level, cam: Camera, w: nu
 }
 
 /** The ninja after a zap, flashing blue-white with sparks flying off, then left scorched; or squashed flat by a press. */
-function drawStruckPlayer(ctx: CanvasRenderingContext2D, { cause, at, age }: NonNullable<Effects['struck']>, time: number) {
+function drawStruckPlayer(ctx: CanvasRenderingContext2D, { cause, at, age }: NonNullable<Effects['struck']>, level: Level, time: number) {
+  if (cause === 'swallowed') {
+    drawSwallowedPlayer(ctx, at, level, age, time)
+    return
+  }
   if (cause === 'crushed') {
     ctx.save()
     ctx.translate(at.x, at.y)
@@ -1586,6 +1655,229 @@ function drawStruckPlayer(ctx: CanvasRenderingContext2D, { cause, at, age }: Non
     ctx.arc(at.x + Math.sin(t * 4 + i) * 6, at.y - 14 - t * 60, 6 + t * 14, 0, Math.PI * 2)
     ctx.fill()
   }
+}
+
+/** Deep space behind everything: glowing clouds of nebula, and two layers of twinkling stars at different depths. */
+function drawSpaceBackdrop(ctx: CanvasRenderingContext2D, cam: Camera, w: number, h: number, time: number) {
+  const halfW = w / 2 / cam.zoom
+  const halfH = h / 2 / cam.zoom
+  const nebulae = ['120, 60, 200', '40, 120, 200', '200, 50, 140']
+  const cell = 1400
+  const shift = { x: cam.pos.x * 0.08, y: cam.pos.y * 0.08 }
+  for (let i = Math.floor((shift.x - halfW) / cell) - 1; i * cell < shift.x + halfW + cell; i++) {
+    for (let j = Math.floor((shift.y - halfH) / cell) - 1; j * cell < shift.y + halfH + cell; j++) {
+      const x = i * cell + hash(i * 2.3 + j * 7.1) * cell - shift.x
+      const y = j * cell + hash(j * 4.9 + i * 1.7) * cell - shift.y
+      const r = 500 + hash(i * 5.5 + j * 3.3) * 500
+      const cloud = ctx.createRadialGradient(x, y, 0, x, y, r)
+      cloud.addColorStop(0, `rgba(${nebulae[Math.abs(i + j * 2) % nebulae.length]}, 0.22)`)
+      cloud.addColorStop(1, 'rgba(0, 0, 0, 0)')
+      ctx.fillStyle = cloud
+      ctx.fillRect(x - r, y - r, r * 2, r * 2)
+    }
+  }
+  for (const [parallax, spacing, size, alpha] of [[0.05, 90, 1, 0.5], [0.15, 160, 1.6, 0.85]]) {
+    const off = { x: cam.pos.x * parallax, y: cam.pos.y * parallax }
+    for (let i = Math.floor((off.x - halfW) / spacing) - 1; i * spacing < off.x + halfW + spacing; i++) {
+      for (let j = Math.floor((off.y - halfH) / spacing) - 1; j * spacing < off.y + halfH + spacing; j++) {
+        const n = hash(i * 12.7 + j * 31.3 + spacing)
+        const twinkle = 0.6 + 0.4 * Math.sin(time * (1 + n * 3) + n * 50)
+        ctx.fillStyle = `rgba(255, ${235 + Math.round(n * 20)}, ${210 + Math.round(n * 45)}, ${alpha * twinkle})`
+        ctx.beginPath()
+        ctx.arc(i * spacing + hash(i + j * 9.1) * spacing - off.x, j * spacing + hash(j + i * 4.3) * spacing - off.y, size * (0.5 + n), 0, Math.PI * 2)
+        ctx.fill()
+      }
+    }
+  }
+}
+
+/**
+ * Each mini-planet as a shaded ball whose bands and craters turn with it, ringed by faint arrows showing which way it
+ * spins once caught, which light up while it's spinning.
+ */
+function drawPlanets(ctx: CanvasRenderingContext2D, level: Level, sim: Sim) {
+  level.planets.forEach((planet, i) => {
+    const { angle, spin } = sim.planets[i]
+    const { at, r } = planet
+    const look = PLANET_LOOKS[i % PLANET_LOOKS.length]
+    const glow = ctx.createRadialGradient(at.x, at.y, r * 0.9, at.x, at.y, r * 1.5)
+    glow.addColorStop(0, `${look.band}55`)
+    glow.addColorStop(1, `${look.band}00`)
+    ctx.fillStyle = glow
+    ctx.fillRect(at.x - r * 1.5, at.y - r * 1.5, r * 3, r * 3)
+
+    ctx.save()
+    ctx.beginPath()
+    ctx.arc(at.x, at.y, r, 0, Math.PI * 2)
+    ctx.fillStyle = look.base
+    ctx.fill()
+    ctx.clip()
+    ctx.translate(at.x, at.y)
+    ctx.rotate(angle)
+    ctx.fillStyle = look.band
+    for (const [y, thick] of [[-0.55, 0.12], [-0.15, 0.2], [0.35, 0.14]]) ctx.fillRect(-r, y * r, r * 2, thick * r)
+    ctx.fillStyle = look.shade
+    ctx.globalAlpha = 0.45
+    for (let k = 0; k < 4; k++) {
+      ctx.beginPath()
+      ctx.arc((hash(i * 3 + k) - 0.5) * r * 1.2, (hash(i * 5 + k * 2) - 0.5) * r * 1.2, r * (0.08 + 0.1 * hash(i + k * 7)), 0, Math.PI * 2)
+      ctx.fill()
+    }
+    ctx.restore()
+    // Lit from the upper left, whichever way it has turned
+    const shade = ctx.createRadialGradient(at.x - r * 0.35, at.y - r * 0.35, r * 0.2, at.x, at.y, r)
+    shade.addColorStop(0, 'rgba(255, 255, 255, 0.25)')
+    shade.addColorStop(0.6, 'rgba(0, 0, 0, 0)')
+    shade.addColorStop(1, 'rgba(0, 0, 0, 0.55)')
+    ctx.fillStyle = shade
+    ctx.beginPath()
+    ctx.arc(at.x, at.y, r, 0, Math.PI * 2)
+    ctx.fill()
+    drawSpinArrows(ctx, planet, angle, Math.min(1, Math.abs(spin) / 3))
+  })
+}
+
+/** Chevrons round a planet pointing the way it spins, turning with it and brighter the faster it goes. */
+function drawSpinArrows(ctx: CanvasRenderingContext2D, planet: Planet, angle: number, speed: number) {
+  const ring = planet.r + 14
+  ctx.strokeStyle = `rgba(255, 255, 255, ${0.3 + 0.6 * speed})`
+  ctx.lineWidth = 2.5
+  ctx.lineCap = 'round'
+  ctx.beginPath()
+  for (let k = 0; k < 3; k++) {
+    const a = angle + (k / 3) * Math.PI * 2
+    ctx.moveTo(planet.at.x + Math.cos(a) * ring, planet.at.y + Math.sin(a) * ring)
+    ctx.arc(planet.at.x, planet.at.y, ring, a, a + 0.5 * planet.spin, planet.spin < 0)
+    const tip = add(planet.at, scale({ x: Math.cos(a + 0.6 * planet.spin), y: Math.sin(a + 0.6 * planet.spin) }, ring))
+    const back = { x: Math.cos(a + 0.45 * planet.spin), y: Math.sin(a + 0.45 * planet.spin) }
+    ctx.moveTo(planet.at.x + back.x * (ring - 6), planet.at.y + back.y * (ring - 6))
+    ctx.lineTo(tip.x, tip.y)
+    ctx.lineTo(planet.at.x + back.x * (ring + 6), planet.at.y + back.y * (ring + 6))
+  }
+  ctx.stroke()
+}
+
+/** A black hole: a swirling accretion disc tilted across a lightless core, edged by a bright lensing ring of bent starlight. */
+function drawBlackHoles(ctx: CanvasRenderingContext2D, level: Level, time: number) {
+  for (const hole of level.blackHoles) {
+    const { at, horizon } = hole
+    const haze = ctx.createRadialGradient(at.x, at.y, horizon, at.x, at.y, horizon * 9)
+    haze.addColorStop(0, 'rgba(255, 150, 60, 0.25)')
+    haze.addColorStop(0.3, 'rgba(160, 60, 200, 0.12)')
+    haze.addColorStop(1, 'rgba(0, 0, 0, 0)')
+    ctx.fillStyle = haze
+    ctx.fillRect(at.x - horizon * 9, at.y - horizon * 9, horizon * 18, horizon * 18)
+    drawAccretionDisc(ctx, hole, time, 'back')
+    ctx.fillStyle = '#000'
+    ctx.beginPath()
+    ctx.arc(at.x, at.y, horizon, 0, Math.PI * 2)
+    ctx.fill()
+    // Starlight and the far side of the disc, bent round the hole by its gravity: a thin bright ring hugging the core,
+    // and a softer arc of the disc lensed up over its top
+    ctx.save()
+    ctx.globalCompositeOperation = 'lighter'
+    const lens = ctx.createRadialGradient(at.x, at.y, horizon, at.x, at.y, horizon * 1.4)
+    lens.addColorStop(0, 'rgba(255, 235, 200, 0.7)')
+    lens.addColorStop(1, 'rgba(255, 140, 60, 0)')
+    ctx.fillStyle = lens
+    ctx.beginPath()
+    ctx.arc(at.x, at.y, horizon * 1.4, 0, Math.PI * 2)
+    ctx.arc(at.x, at.y, horizon, 0, Math.PI * 2, true)
+    ctx.fill()
+    ctx.strokeStyle = 'rgba(255, 200, 130, 0.55)'
+    ctx.lineWidth = horizon * 0.2
+    ctx.beginPath()
+    ctx.ellipse(at.x, at.y, horizon * 1.3, horizon * 1.2, -0.25, Math.PI * 1.05, Math.PI * 1.95)
+    ctx.stroke()
+    ctx.strokeStyle = 'rgba(255, 250, 235, 0.95)'
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.arc(at.x, at.y, horizon + 1.5, 0, Math.PI * 2)
+    ctx.stroke()
+    ctx.restore()
+    drawAccretionDisc(ctx, hole, time, 'front')
+  }
+}
+
+/** Half the disc: the far side, drawn behind the core, or the near side in front of it. */
+function drawAccretionDisc(ctx: CanvasRenderingContext2D, { at, horizon }: BlackHole, time: number, half: 'back' | 'front') {
+  const tilt = 0.28
+  ctx.save()
+  ctx.translate(at.x, at.y)
+  ctx.rotate(-0.25)
+  ctx.scale(1, tilt)
+  ctx.beginPath()
+  ctx.rect(-horizon * 5, half === 'back' ? -horizon * 5 : 0, horizon * 10, horizon * 5)
+  ctx.clip()
+  ctx.globalCompositeOperation = 'lighter'
+  const [inner, outer] = [horizon * 1.15, horizon * 4.2]
+  const glow = ctx.createRadialGradient(0, 0, inner, 0, 0, outer)
+  glow.addColorStop(0, 'rgba(255, 245, 225, 0.85)')
+  glow.addColorStop(0.2, 'rgba(255, 185, 90, 0.55)')
+  glow.addColorStop(0.6, 'rgba(210, 80, 40, 0.22)')
+  glow.addColorStop(1, 'rgba(120, 30, 60, 0)')
+  ctx.fillStyle = glow
+  ctx.beginPath()
+  ctx.arc(0, 0, outer, 0, Math.PI * 2)
+  ctx.arc(0, 0, inner, 0, Math.PI * 2, true)
+  ctx.fill()
+  // Streaks of gas swirling round, the inner ones fastest
+  ctx.lineWidth = horizon * 0.07
+  for (let k = 0; k < 10; k++) {
+    const r = inner + (outer - inner) * (k / 10) ** 1.3
+    ctx.strokeStyle = `rgba(255, 225, 170, ${0.35 * (1 - k / 10)})`
+    ctx.setLineDash([horizon * (0.5 + hash(k) * 1.2), horizon * (0.3 + hash(k * 3.1) * 0.8)])
+    ctx.lineDashOffset = (-time * horizon * 6) / (1 + k * 0.4)
+    ctx.beginPath()
+    ctx.arc(0, 0, r, 0, Math.PI * 2)
+    ctx.stroke()
+  }
+  ctx.restore()
+}
+
+/** For space levels: below the death line, the dark of the void swallowing the starlight. */
+function drawVoid(ctx: CanvasRenderingContext2D, level: Level, cam: Camera, w: number, h: number) {
+  const left = cam.pos.x - w / 2 / cam.zoom - 20
+  const right = cam.pos.x + w / 2 / cam.zoom + 20
+  const bottom = cam.pos.y + h / 2 / cam.zoom + 20
+  const top = level.deathY - 200
+  if (bottom < top) return
+  const dark = ctx.createLinearGradient(0, top, 0, level.deathY + 120)
+  dark.addColorStop(0, 'rgba(0, 0, 0, 0)')
+  dark.addColorStop(0.62, 'rgba(60, 20, 110, 0.35)')
+  dark.addColorStop(1, 'rgba(0, 0, 0, 0.97)')
+  ctx.fillStyle = dark
+  ctx.fillRect(left, top, right - left, Math.max(bottom, level.deathY + 120) - top)
+}
+
+/** The ninja drifting off into the void: tumbling, shrinking into the distance and fading away. */
+function drawDriftingPlayer(ctx: CanvasRenderingContext2D, pos: Vec, age: number, time: number) {
+  const away = Math.max(0.15, 1 - age * 0.45)
+  ctx.save()
+  ctx.globalAlpha = away
+  ctx.translate(pos.x, pos.y)
+  ctx.rotate(age * 2.5)
+  ctx.scale(away, away)
+  drawPlayer(ctx, { x: 0, y: 0 }, { x: 0, y: 0 }, time)
+  ctx.restore()
+}
+
+/** The ninja stretched into a thread towards the black hole that took them, spiralling in and fading as they go. */
+function drawSwallowedPlayer(ctx: CanvasRenderingContext2D, at: Vec, level: Level, age: number, time: number) {
+  const hole = level.blackHoles.reduce((a, b) => (Math.hypot(b.at.x - at.x, b.at.y - at.y) < Math.hypot(a.at.x - at.x, a.at.y - at.y) ? b : a))
+  const k = Math.min(1, age / SWALLOW_SECS)
+  const rel = sub(at, hole.at)
+  const turn = k * k * 3
+  const pull = (1 - k) * (1 - k)
+  const pos = add(hole.at, scale({ x: rel.x * Math.cos(turn) - rel.y * Math.sin(turn), y: rel.x * Math.sin(turn) + rel.y * Math.cos(turn) }, pull))
+  if (k >= 1) return
+  ctx.save()
+  ctx.globalAlpha = 1 - k
+  ctx.translate(pos.x, pos.y)
+  ctx.rotate(Math.atan2(hole.at.y - pos.y, hole.at.x - pos.x))
+  ctx.scale(1 + 3 * k, Math.max(0.1, 1 - 0.9 * k))
+  drawPlayer(ctx, { x: 0, y: 0 }, { x: 0, y: 0 }, time)
+  ctx.restore()
 }
 
 function bounds(poly: Poly): [minX: number, maxX: number, minY: number, maxY: number] {

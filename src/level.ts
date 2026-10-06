@@ -30,7 +30,7 @@ export type Shape = ({ rect: [x: number, y: number, w: number, h: number] } | { 
   belt?: number
 }
 
-export type Theme = 'lava' | 'clouds' | 'ice' | 'jungle' | 'pinball' | 'factory'
+export type Theme = 'lava' | 'clouds' | 'ice' | 'jungle' | 'pinball' | 'factory' | 'space'
 
 /** Green vines hold and swing you harder; brown vines snap soon after you grab them. */
 export type VineKind = 'green' | 'brown'
@@ -84,6 +84,20 @@ export type WireData = { from: [number, number]; to: [number, number]; cycle?: C
 export type Wire = { from: Vec; to: Vec; cycle?: Cycle }
 
 /**
+ * A mini-planet of radius `r`, still until the rope catches it; then it spins up in its direction (clockwise or
+ * anticlockwise as seen on screen), carrying the rope's hook round with its surface.
+ */
+export type PlanetData = { at: [number, number]; r: number; spin: 'cw' | 'ccw' }
+
+/** `spin` is +1 for clockwise on screen, -1 for anticlockwise. */
+export type Planet = { at: Vec; r: number; spin: 1 | -1 }
+
+/** A black hole whose pull grows the nearer you come, and which swallows whatever touches its event horizon (`horizon` radius). */
+export type BlackHoleData = { at: [number, number]; horizon: number }
+
+export type BlackHole = { at: Vec; horizon: number }
+
+/**
  * Something solid that moves as a pure function of time: a platform gliding back and forth, or a crate riding a conveyor.
  * Its `poly` is where it sits with no offset; `moverOffset` says how far it has moved.
  */
@@ -112,6 +126,10 @@ export type LevelData = {
   platforms?: PlatformData[]
   conveyors?: ConveyorData[]
   wires?: WireData[]
+  /** Downward acceleration in units/s², where it differs from the usual. */
+  gravity?: number
+  planets?: PlanetData[]
+  blackHoles?: BlackHoleData[]
 }
 
 export type Gust = { min: Vec; max: Vec; force: Vec; cycle?: Cycle }
@@ -134,6 +152,9 @@ export type Level = {
   movers: Mover[]
   conveyors: Conveyor[]
   wires: Wire[]
+  gravity?: number
+  planets: Planet[]
+  blackHoles: BlackHole[]
 }
 
 /** The goal gong's disc radius. */
@@ -169,6 +190,9 @@ export function buildLevel(data: LevelData): Level {
     movers: [...platforms, ...crates],
     conveyors,
     wires: (data.wires ?? []).map(({ from, to, cycle }) => ({ from: vec(...from), to: vec(...to), cycle: cycle && { ...cycle, offset: cycle.offset ?? 0 } })),
+    gravity: data.gravity,
+    planets: (data.planets ?? []).map(({ at, r, spin }) => ({ at: vec(...at), r, spin: spin === 'cw' ? 1 : -1 })),
+    blackHoles: (data.blackHoles ?? []).map(({ at, horizon }) => ({ at: vec(...at), horizon })),
   }
 }
 

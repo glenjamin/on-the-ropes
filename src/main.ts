@@ -18,19 +18,22 @@ const SPEED_ZOOM_FULL = 700
 const DEATH_CARD_DELAY = 1
 const RESPAWN_DELAY = 2
 const PLUMMET_GRAVITY = 4000
+/** Drifting off into the void, the player slows to this fraction of their speed each second. */
+const DRIFT_SLOWING = 0.5
 /** Pause after striking the gong before the result card appears, so the impact is seen. */
 const WIN_CARD_DELAY = 1
-/** What each theme's fall says, and whether the player sinks where they land or plummets out of sight. */
-const DEATHS: Record<Theme, { message: string; sinks: boolean }> = {
-  lava: { message: 'Toasted', sinks: true },
-  clouds: { message: 'Lost in the clouds', sinks: false },
-  ice: { message: 'Frozen solid', sinks: true },
-  jungle: { message: 'Swept downriver', sinks: true },
-  pinball: { message: 'Drained', sinks: false },
-  factory: { message: 'Smelted', sinks: true },
+/** What each theme's fall says, and whether the player sinks where they land, plummets out of sight, or drifts off. */
+const DEATHS: Record<Theme, { message: string; fall: 'sink' | 'plummet' | 'drift' }> = {
+  lava: { message: 'Toasted', fall: 'sink' },
+  clouds: { message: 'Lost in the clouds', fall: 'plummet' },
+  ice: { message: 'Frozen solid', fall: 'sink' },
+  jungle: { message: 'Swept downriver', fall: 'sink' },
+  pinball: { message: 'Drained', fall: 'plummet' },
+  factory: { message: 'Smelted', fall: 'sink' },
+  space: { message: 'Lost in the void', fall: 'drift' },
 }
 /** What dying other than by falling says. */
-const STRUCK_DOWN: Record<Death['cause'], string> = { zapped: 'Zapped', crushed: 'Flattened' }
+const STRUCK_DOWN: Record<Death['cause'], string> = { zapped: 'Zapped', crushed: 'Flattened', swallowed: 'Spaghettified' }
 /** Best time per level id; a level counts as completed once it has one. */
 const PROGRESS_KEY = 'on-the-ropes:progress'
 const LAST_LEVEL_KEY = 'on-the-ropes:last-level'
@@ -135,7 +138,8 @@ function frame(now: number) {
     }
   } else if (phase === 'dead') {
     const fall = DEATHS[level.theme]
-    if (!fall.sinks && !sim.dead) plummet(dt)
+    if (fall.fall === 'plummet' && !sim.dead) plummet(dt)
+    else if (fall.fall === 'drift' && !sim.dead) drift(dt)
     const message = sim.dead ? STRUCK_DOWN[sim.dead.cause] : fall.message
     if (phaseTime > DEATH_CARD_DELAY && !overlay.classList.contains('show')) showOverlay(`<h1>${message}</h1>`)
     if (phaseTime > RESPAWN_DELAY) respawn()
@@ -150,6 +154,7 @@ function frame(now: number) {
     tapRings: tapRings.map((r) => ({ at: r.at, age: t - r.t })),
     sinking: sunkAt ? { at: sunkAt, age: phaseTime } : undefined,
     struck: phase === 'dead' && sim.dead ? { ...sim.dead, age: phaseTime } : undefined,
+    adrift: phase === 'dead' && !sim.dead && DEATHS[level.theme].fall === 'drift' ? phaseTime : undefined,
   }
   render(ctx, canvas.width / devicePixelRatio, canvas.height / devicePixelRatio, cam, level, sim, fx, t)
   timeEl.textContent = runTime.toFixed(2)
@@ -168,7 +173,7 @@ function die() {
   phase = 'dead'
   phaseTime = 0
   sim.release()
-  if (DEATHS[level.theme].sinks && !sim.dead) sunkAt = { x: sim.pos.x, y: level.deathY - RADIUS }
+  if (DEATHS[level.theme].fall === 'sink' && !sim.dead) sunkAt = { x: sim.pos.x, y: level.deathY - RADIUS }
 }
 
 function respawn() {
@@ -307,6 +312,12 @@ function screenToWorld(x: number, y: number): Vec {
 /** After falling out of the sky: drop ever faster, past the speed limit and through anything below. */
 function plummet(dt: number) {
   sim.vel.y += PLUMMET_GRAVITY * dt * TIME_SCALE
+  sim.pos = add(sim.pos, scale(sim.vel, dt * TIME_SCALE))
+}
+
+/** After falling into the void: tumble slowly on, away into the dark. */
+function drift(dt: number) {
+  sim.vel = scale(sim.vel, DRIFT_SLOWING ** dt)
   sim.pos = add(sim.pos, scale(sim.vel, dt * TIME_SCALE))
 }
 

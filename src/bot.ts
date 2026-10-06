@@ -1,5 +1,6 @@
-// A bot that plays levels the way a person could: it taps points on terrain, vines and moving things it can see, with
-// human reaction gaps and coarse timing, and searches for a route by keeping a few promising positions after each move.
+// A bot that plays levels the way a person could: it taps points on terrain, vines, planets and moving things it can
+// see, with human reaction gaps and coarse timing, and searches for a route by keeping a few promising positions after
+// each move.
 import { add, dist, dot, norm, scale, sub, type Vec } from './geom'
 import type { Level } from './level'
 import { playStep, SUBSTEP, TIME_SCALE } from './pace'
@@ -33,6 +34,10 @@ const BREAK_BONUS = 120
 const VINE_SPACING = 90
 /** How close a crate must be for the bot to consider holding off tapping to drop into it or ride it. */
 const CRATE_SIGHT = 1200
+/** How far apart round a planet the bot considers tapping. */
+const PLANET_SPACING = 70
+/** Coming this close to a black hole's centre counts against a position, like skimming the death line. */
+const BLACK_HOLE_DANGER = 220
 /** Roughly what's on screen around the player in landscape, given the camera framing. */
 const VIEW = { side: 680, above: 480, below: 170 }
 
@@ -157,8 +162,8 @@ function advance(sim: Sim, level: Level, seconds: number, onStep?: (sim: Sim) =>
 }
 
 /**
- * Points on visible terrain, vines and moving platforms within the rope's reach, favouring ones towards the gong and
- * above the player. Vines and platforms are aimed at where they are right now, as a person would tap them.
+ * Points on visible terrain, vines, planets and moving platforms within the rope's reach, favouring ones towards the gong
+ * and above the player. Vines and platforms are aimed at where they are right now, as a person would tap them.
  */
 function targetsInView(sim: Sim, level: Level): Vec[] {
   const { pos } = sim
@@ -182,6 +187,10 @@ function targetsInView(sim: Sim, level: Level): Vec[] {
     if (snapped !== null) return
     for (let along = vine.length; along > 60; along -= VINE_SPACING) consider(vinePoint(vine, angle, along))
   })
+  for (const { at, r } of level.planets) {
+    const steps = Math.ceil((2 * Math.PI * r) / PLANET_SPACING)
+    for (let k = 0; k < steps; k++) consider(add(at, scale({ x: Math.cos((2 * Math.PI * k) / steps), y: Math.sin((2 * Math.PI * k) / steps) }, r)))
+  }
   candidates.sort((x, y) => y.appeal - x.appeal)
   const chosen: Vec[] = []
   for (const { p } of candidates) {
@@ -198,12 +207,14 @@ function cratesNear(sim: Sim, level: Level): boolean {
 }
 
 /**
- * Closer to the gong (allowing for where momentum is taking the player) is better; skimming the death line is not.
+ * Closer to the gong (allowing for where momentum is taking the player) is better; skimming the death line or a black
+ * hole is not.
  * Breaking ice off counts for a little, since it may be clearing the way.
  */
 function progress(sim: Sim, level: Level): number {
   const heading = add(sim.pos, { x: sim.vel.x * 0.3, y: sim.vel.y * 0.3 })
-  const danger = sim.pos.y > level.deathY - 250 ? 300 : 0
+  const nearHole = level.blackHoles.some((hole) => dist(sim.pos, hole.at) < hole.horizon + BLACK_HOLE_DANGER)
+  const danger = (sim.pos.y > level.deathY - 250 ? 300 : 0) + (nearHole ? 300 : 0)
   return -dist(heading, level.goal.pos) - danger + BREAK_BONUS * sim.broken.length
 }
 

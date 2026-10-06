@@ -12,13 +12,16 @@ import {
   scale,
   segmentHit,
   sub,
+  wrapAngle,
   type Vec,
 } from './geom'
 import { gongCentre, restingGong, swingGong, type Gong } from './gong'
-import { gustStrength, moverOffset, moverVelocity, wireLive, type Flipper, type Level, type Poly, type Surface, type Vine } from './level'
+import { gustStrength, moverOffset, moverVelocity, wireLive, type Flipper, type Level, type Planet, type Poly, type Surface, type Vine } from './level'
 
 export const RADIUS = 12
 export const HOOK_RANGE = 700
+/** Downward acceleration (units/s²) in levels that don't set their own. */
+const GRAVITY = 2000
 
 const HOOK_SPEED = 6000
 /** Shortest the rope can reel to; it can still be stretched longer than this when wrapped round corners. */
@@ -92,27 +95,56 @@ const BELT_GRIP = 4
 const CRUSH_DEPTH = 5
 /** Half a live wire's thickness: touching it is the player's radius plus this away. */
 export const WIRE_RADIUS = 3
+/** How fast a mini-planet spins once the rope has caught it (radians/s), and how long it takes to get up to speed. */
+const PLANET_SPIN = 5
+const PLANET_SPIN_UP_SECS = 0.5
+/** The rope reels in no shorter than this many of a planet's radii, so the planet whirls the player round at arm's length. */
+const PLANET_ROPE_MIN = 1
+/** Like a vine, a planet holds the rope nearly taut and stiff, so its spin carries the player round rather than bouncing them. */
+const PLANET_ROPE_STIFFNESS = 240
+const PLANET_ROPE_DAMPING = 0.6
+const PLANET_START_LENGTH = 0.9
+/** A spinning planet pushes the player round it (units/s²) until they keep pace with its spin, so they orbit rather than lag. */
+const PLANET_WHIRL = 2500
+/** Fraction of a planet's spin lost per second once the rope lets go of it. */
+const PLANET_SPIN_DECAY = 0.4
+/** The speed limit while on a planet and in the fling after letting go, until the next catch or touching terrain. */
+const PLANET_MAX_SPEED = 1500
+/** How firmly a spinning planet's surface carries a player standing on it along with it (per second). */
+const PLANET_GRIP = 3
+/** A black hole's pull at its event horizon (units/s²); it weakens with the square of the distance from its centre. */
+const BLACK_HOLE_PULL = 24000
 
 /** What has lifted the speed limit, until the next rope catches or the player touches terrain. */
-type Boost = 'ramp' | 'vine' | 'kick' | 'launcher'
-const BOOST_MAX_SPEED: Record<Boost, number> = { ramp: LAUNCH_MAX_SPEED, launcher: LAUNCH_MAX_SPEED, vine: VINE_MAX_SPEED, kick: KICK_MAX_SPEED }
+type Boost = 'ramp' | 'vine' | 'kick' | 'launcher' | 'planet'
+const BOOST_MAX_SPEED: Record<Boost, number> = {
+  ramp: LAUNCH_MAX_SPEED,
+  launcher: LAUNCH_MAX_SPEED,
+  vine: VINE_MAX_SPEED,
+  kick: KICK_MAX_SPEED,
+  planet: PLANET_MAX_SPEED,
+}
 
 /** A point the rope passes through; `side` records which way it bent so it can unbend. */
 type Anchor = { p: Vec; side: number }
 
 /**
  * `age` is how long the rope has been attached; `grip` how long it holds before slipping off, or null if it holds for good.
- * `caught` is the terrain piece it caught on, the vine and how far down it, or the platform and where on it (unmoved).
+ * `caught` is the terrain piece it caught on, the vine and how far down it, the platform and where on it (unmoved), or
+ * the planet and where round it (unturned).
  */
 export type Rope = { anchors: Anchor[]; length: number; age: number; grip: number | null; caught: Caught }
-export type Caught = { poly: number } | { vine: number; along: number } | { mover: number; at: Vec }
+export type Caught = { poly: number } | { vine: number; along: number } | { mover: number; at: Vec } | PlanetCaught
+type PlanetCaught = { planet: number; angle: number }
 /** A vine's swing: `angle` from straight down (radians, positive towards +x), `spin` its rate, and when it snapped. */
 export type VineState = { angle: number; spin: number; snapped: number | null }
 export type Hook = { origin: Vec; pos: Vec; dir: Vec; travelled: number }
 /** The player caught in a launcher's cup at `caught`; `fired` once it has thrown them out. */
 export type Launch = { launcher: number; caught: number; fired: boolean }
-/** Ways to die other than falling: touching a live wire, or being squeezed by a moving platform. */
-export type Death = { cause: 'zapped' | 'crushed'; at: Vec; time: number }
+/** A mini-planet's turn: `angle` it has turned through and `spin` its rate (radians, positive clockwise on screen). */
+export type PlanetState = { angle: number; spin: number }
+/** Ways to die other than falling: touching a live wire, being squeezed by a moving platform, or falling into a black hole. */
+export type Death = { cause: 'zapped' | 'crushed' | 'swallowed'; at: Vec; time: number }
 
 export class Sim {
   pos: Vec
@@ -125,7 +157,7 @@ export class Sim {
   /** Rope rest length on grabbing, as a fraction of the distance to the anchor; below 1 it pulls straight away. */
   startLength = 0.3
   /** Downward acceleration, units/s². */
-  gravity = 2000
+  gravity: number
   /** Seconds simulated since the level started, which times gusts that blow in bursts. */
   time = 0
   /** Set once the player reaches the goal: they bounce off the gong and stay caught around it. */
@@ -146,6 +178,8 @@ export class Sim {
   /** The last time each bumper that has been hit kicked the player, by terrain index, for its flash. */
   bumps: { poly: number; time: number }[] = []
   launch: Launch | null = null
+  /** Each of the level's mini-planets, in order. */
+  planets: PlanetState[]
   /** Set when something other than a fall kills the player; the sim stops there. */
   dead: Death | null = null
 
@@ -153,13 +187,15 @@ export class Sim {
     this.pos = { ...level.start }
     this.vines = hangingVines(level)
     this.flips = level.flippers.map(() => null)
+    this.planets = stillPlanets(level)
+    this.gravity = level.gravity ?? GRAVITY
   }
 
   /** An independent copy, for exploring different choices from the same moment. */
   clone(): Sim {
     const copy = new Sim(this.level)
-    const { pos, vel, rope, hook, grounded, stiffness, startLength, gravity, time, gong, slip, broken, boost, vines, flips, bumps, launch, dead } = this
-    Object.assign(copy, structuredClone({ pos, vel, rope, hook, grounded, stiffness, startLength, gravity, time, gong, slip, broken, boost, vines, flips, bumps, launch, dead }))
+    const { pos, vel, rope, hook, grounded, stiffness, startLength, gravity, time, gong, slip, broken, boost, vines, flips, bumps, launch, planets, dead } = this
+    Object.assign(copy, structuredClone({ pos, vel, rope, hook, grounded, stiffness, startLength, gravity, time, gong, slip, broken, boost, vines, flips, bumps, launch, planets, dead }))
     return copy
   }
 
@@ -173,6 +209,7 @@ export class Sim {
     this.flips = this.level.flippers.map(() => null)
     this.bumps = []
     this.launch = null
+    this.planets = stillPlanets(this.level)
     this.dead = null
     this.pos = { ...this.level.start }
     this.vel = { x: 0, y: 0 }
@@ -208,8 +245,11 @@ export class Sim {
     this.triggerFlippers()
     this.vel.y += this.gravity * dt
     this.blowInGusts(dt)
+    this.pullTowardBlackHoles(dt)
     this.pumpOnVine(dt)
+    this.whirlRoundPlanet(dt)
     this.rideMover()
+    this.turnPlanets(dt)
     this.swingVines(dt, this.pullOnRope(dt))
     const speed = len(this.vel)
     if (speed > this.speedLimit()) this.vel = scale(this.vel, this.speedLimit() / speed)
@@ -222,6 +262,7 @@ export class Sim {
     }
     this.collide(dt)
     this.zapOnWires()
+    this.fallIntoBlackHoles()
     this.batWithFlippers(prev, dt)
     this.catchInLauncher()
     if (this.gong) this.bounceOffGong(this.gong, dt)
@@ -341,7 +382,8 @@ export class Sim {
   private reel(delta: number) {
     const rope = this.rope
     if (!rope || delta === 0) return
-    rope.length = Math.max(ROPE_MIN_LENGTH, Math.min(HOOK_RANGE, rope.length + delta))
+    const shortest = 'planet' in rope.caught ? this.level.planets[rope.caught.planet].r * PLANET_ROPE_MIN : ROPE_MIN_LENGTH
+    rope.length = Math.max(Math.min(shortest, rope.length), Math.min(HOOK_RANGE, rope.length + delta))
   }
 
   private blowInGusts(dt: number) {
@@ -360,16 +402,18 @@ export class Sim {
     const rope = this.rope
     if (!rope) return 0
     const pivot = rope.anchors[rope.anchors.length - 1]
-    const toPivot = sub(pivot.p, this.pos)
+    // A rope caught on a planet wraps round it when the player swings behind it, pulling from where it leaves the surface
+    const wrap = rope.anchors.length === 1 && 'planet' in rope.caught ? this.planetWrap(rope.caught) : null
+    const toPivot = sub(wrap?.leaves ?? pivot.p, this.pos)
     const l = len(toPivot)
-    const stretch = fixedLength(rope) + l - rope.length
+    const stretch = fixedLength(rope) + (wrap?.arc ?? 0) + l - rope.length
     if (stretch <= 0 || l < 1e-6) return 0
     const n = scale(toPivot, 1 / l)
-    const onVine = 'vine' in rope.caught
-    const stiffness = onVine ? VINE_ROPE_STIFFNESS : this.stiffness
-    // Damp the stretch as it changes, which on a swinging vine means relative to the vine's own movement
-    const pivotVel = rope.anchors.length === 1 ? this.anchorVelocity(rope.caught) : { x: 0, y: 0 }
-    const damping = 2 * (onVine ? VINE_ROPE_DAMPING : ROPE_DAMPING) * Math.sqrt(stiffness) * dot(sub(this.vel, pivotVel), n)
+    const [stiffness, dampingRatio] =
+      'vine' in rope.caught ? [VINE_ROPE_STIFFNESS, VINE_ROPE_DAMPING] : 'planet' in rope.caught ? [PLANET_ROPE_STIFFNESS, PLANET_ROPE_DAMPING] : [this.stiffness, ROPE_DAMPING]
+    // Damp the stretch as it changes, which on a swinging vine or spinning planet means relative to the anchor's own movement
+    const pivotVel = wrap ? wrap.vel : rope.anchors.length === 1 ? this.anchorVelocity(rope.caught) : { x: 0, y: 0 }
+    const damping = 2 * dampingRatio * Math.sqrt(stiffness) * dot(sub(this.vel, pivotVel), n)
     const pull = Math.max(0, stiffness * stretch - damping)
     this.vel = add(this.vel, scale(n, pull * dt))
     return pull
@@ -383,6 +427,18 @@ export class Sim {
     const swing = dot(this.vel, across)
     if (Math.abs(swing) < GLIDE_MIN_SPEED || len(this.vel) >= VINE_MAX_SPEED) return
     this.vel = add(this.vel, scale(across, Math.sign(swing) * VINE_PUMP * dt))
+  }
+
+  /** A planet the rope has caught pushes the player round it, until they're going round as fast as it spins. */
+  private whirlRoundPlanet(dt: number) {
+    const rope = this.rope
+    if (!rope || !('planet' in rope.caught)) return
+    const planet = this.level.planets[rope.caught.planet]
+    const { spin } = this.planets[rope.caught.planet]
+    const rel = sub(this.pos, planet.at)
+    const round = scale(norm(perp(rel)), Math.sign(spin))
+    const lag = Math.abs(spin) * len(rel) - dot(this.vel, round)
+    if (lag > 0) this.vel = add(this.vel, scale(round, Math.min(lag, PLANET_WHIRL * dt)))
   }
 
   /**
@@ -416,6 +472,11 @@ export class Sim {
   /** How fast the rope's first anchor is moving, with whatever it caught on. */
   private anchorVelocity(caught: Caught): Vec {
     if ('mover' in caught) return moverVelocity(this.level.movers[caught.mover], this.time)
+    if ('planet' in caught) {
+      const planet = this.level.planets[caught.planet]
+      const { angle, spin } = this.planets[caught.planet]
+      return surfaceVelocity(spin, sub(planetPoint(planet, angle + caught.angle), planet.at))
+    }
     if (!('vine' in caught)) return { x: 0, y: 0 }
     const { angle, spin } = this.vines[caught.vine]
     return { x: Math.cos(angle) * spin * caught.along, y: -Math.sin(angle) * spin * caught.along }
@@ -426,6 +487,59 @@ export class Sim {
     const rope = this.rope
     if (!rope || !('mover' in rope.caught)) return
     rope.anchors[0].p = add(rope.caught.at, moverOffset(this.level.movers[rope.caught.mover], this.time))
+  }
+
+  /**
+   * A planet the rope has caught spins up in its own direction, carrying the rope's hook round with its surface; the
+   * rest coast, slowing down.
+   */
+  private turnPlanets(dt: number) {
+    const rope = this.rope
+    const held = rope && 'planet' in rope.caught ? rope.caught : null
+    this.level.planets.forEach((planet, i) => {
+      const state = this.planets[i]
+      if (held?.planet === i) {
+        const target = planet.spin * PLANET_SPIN
+        const change = (PLANET_SPIN / PLANET_SPIN_UP_SECS) * dt
+        state.spin += Math.max(-change, Math.min(change, target - state.spin))
+      } else state.spin *= Math.exp(-PLANET_SPIN_DECAY * dt)
+      state.angle += state.spin * dt
+    })
+    if (rope && held) rope.anchors[0].p = planetPoint(this.level.planets[held.planet], this.planets[held.planet].angle + held.angle)
+  }
+
+  /**
+   * Where a rope caught on a planet leaves its surface towards the player, how much of it lies wrapped round the planet
+   * before that, and how fast the surface is moving there.
+   */
+  planetWrap(caught: PlanetCaught): { leaves: Vec; arc: number; vel: Vec } {
+    const planet = this.level.planets[caught.planet]
+    const { angle, spin } = this.planets[caught.planet]
+    const anchor = angle + caught.angle
+    const rel = sub(this.pos, planet.at)
+    const reach = planet.r + ANCHOR_OFFSET
+    // Points on the surface within this angle of the player's direction are in plain sight of them
+    const sight = Math.acos(Math.min(1, reach / Math.max(reach, len(rel))))
+    const towards = Math.atan2(rel.y, rel.x)
+    const behind = wrapAngle(anchor - towards)
+    const leavesAt = Math.abs(behind) <= sight ? anchor : towards + Math.sign(behind) * sight
+    const leaves = planetPoint(planet, leavesAt)
+    return { leaves, arc: reach * Math.abs(wrapAngle(anchor - leavesAt)), vel: surfaceVelocity(spin, sub(leaves, planet.at)) }
+  }
+
+  /** Black holes pull harder the nearer the player comes, bending their path; once the gong is struck they let go. */
+  private pullTowardBlackHoles(dt: number) {
+    if (this.gong) return
+    for (const hole of this.level.blackHoles) {
+      const toward = sub(hole.at, this.pos)
+      const d = Math.max(hole.horizon, len(toward))
+      this.vel = add(this.vel, scale(norm(toward), ((BLACK_HOLE_PULL * hole.horizon * hole.horizon) / (d * d)) * dt))
+    }
+  }
+
+  private fallIntoBlackHoles() {
+    if (this.gong || !this.level.blackHoles.some((hole) => dist(this.pos, hole.at) < hole.horizon + RADIUS)) return
+    this.die('swallowed')
   }
 
   /** Touching a live wire is deadly; the rope is insulated, so it passes through them harmlessly. */
@@ -457,6 +571,21 @@ export class Sim {
       const p = vinePoint(vine, this.vines[onVine.vine].angle, onVine.along)
       this.attach(p, vine.kind === 'brown' ? VINE_SNAP_SECS : null, { vine: onVine.vine, along: onVine.along }, VINE_START_LENGTH)
       if (vine.kind === 'green') this.boost = 'vine'
+      return hook.origin
+    }
+    // A hook flying into a black hole is lost
+    const swallowedAt = Math.min(...this.level.blackHoles.map((hole) => circleHit(hook.pos, next, hole.at, hole.horizon) ?? Infinity))
+    const onPlanet = this.planetHit(hook.pos, next)
+    if (swallowedAt < Math.min(hit?.t ?? Infinity, onPlanet?.t ?? Infinity)) {
+      this.hook = null
+      return null
+    }
+    if (onPlanet && (!hit || onPlanet.t < hit.t)) {
+      const planet = this.level.planets[onPlanet.planet]
+      const around = Math.atan2(onPlanet.point.y - planet.at.y, onPlanet.point.x - planet.at.x)
+      const caught = { planet: onPlanet.planet, angle: around - this.planets[onPlanet.planet].angle }
+      this.attach(planetPoint(planet, around), null, caught, PLANET_START_LENGTH)
+      this.boost = 'planet'
       return hook.origin
     }
     const onMover = this.moverHit(hook.pos, next)
@@ -493,6 +622,16 @@ export class Sim {
     this.movingPolys().forEach((poly, mover) => {
       const hit = firstHit(p, p2, poly)
       if (hit && (!best || hit.t < best.t)) best = { ...hit, mover }
+    })
+    return best
+  }
+
+  /** Where along p→p2 it first strikes a planet. */
+  private planetHit(p: Vec, p2: Vec): { t: number; point: Vec; planet: number } | null {
+    let best: { t: number; point: Vec; planet: number } | null = null
+    this.level.planets.forEach((planet, i) => {
+      const t = circleHit(p, p2, planet.at, planet.r)
+      if (t !== null && (!best || t < best.t)) best = { t, point: add(p, scale(sub(p2, p), t)), planet: i }
     })
     return best
   }
@@ -587,6 +726,23 @@ export class Sim {
             floor = { vel: surfaceVel, grip: GROUND_FRICTION }
           } else if (poly.belt) floor = { vel: { x: poly.belt, y: 0 }, grip: BELT_GRIP }
         }
+      }
+    }
+    for (const [i, planet] of this.level.planets.entries()) {
+      const away = sub(this.pos, planet.at)
+      const l = len(away)
+      if (l >= planet.r + RADIUS || l < 1e-6) continue
+      const n = scale(away, 1 / l)
+      this.pos = add(planet.at, scale(n, planet.r + RADIUS))
+      // Brushing the planet you're whirling round keeps its fling
+      onOther ||= !(this.rope && 'planet' in this.rope.caught && this.rope.caught.planet === i)
+      // A spinning planet's surface drags the player along as it moves past them
+      const surfaceVel = surfaceVelocity(this.planets[i].spin, scale(n, planet.r))
+      const vn = dot(sub(this.vel, surfaceVel), n)
+      if (vn < 0) this.vel = sub(this.vel, scale(n, vn * (1 + (vn < -120 ? WALL_BOUNCE : 0))))
+      if (n.y < -0.6) {
+        this.grounded = true
+        floor ??= { vel: surfaceVel, grip: PLANET_GRIP }
       }
     }
     if (pushedByMover && this.squeezed()) this.die('crushed')
@@ -709,6 +865,30 @@ export function flipperAngle(flipper: Flipper, flipped: number | null, time: num
   return flipper.rest + flipper.swing * Math.max(0, Math.min(1, raised))
 }
 
+/** The point on a planet's surface (just outside it, where the rope rests) at `angle` from pointing right. */
+function planetPoint(planet: Planet, angle: number): Vec {
+  return add(planet.at, scale(angleDir(angle), planet.r + ANCHOR_OFFSET))
+}
+
+/** How fast a point `rel` from a planet's centre is moving as it spins at `spin` radians/s. */
+function surfaceVelocity(spin: number, rel: Vec): Vec {
+  return scale(perp(rel), spin)
+}
+
+/** Fraction along p→p2 where it first enters the circle, or null if it doesn't. */
+function circleHit(p: Vec, p2: Vec, centre: Vec, r: number): number | null {
+  const d = sub(p2, p)
+  const f = sub(p, centre)
+  const a = dot(d, d)
+  const b = 2 * dot(f, d)
+  const c = dot(f, f) - r * r
+  if (c <= 0) return 0
+  const disc = b * b - 4 * a * c
+  if (disc < 0 || a < 1e-12) return null
+  const t = (-b - Math.sqrt(disc)) / (2 * a)
+  return t >= 0 && t <= 1 ? t : null
+}
+
 /** Where the player sits in a launcher's cup, given the middle of its floor. */
 export function launcherRest(floor: Vec): Vec {
   return { x: floor.x, y: floor.y - RADIUS }
@@ -716,6 +896,10 @@ export function launcherRest(floor: Vec): Vec {
 
 function angleDir(angle: number): Vec {
   return { x: Math.cos(angle), y: Math.sin(angle) }
+}
+
+function stillPlanets(level: Level): PlanetState[] {
+  return level.planets.map(() => ({ angle: 0, spin: 0 }))
 }
 
 function hangingVines(level: Level): VineState[] {
