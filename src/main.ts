@@ -63,6 +63,7 @@ if (import.meta.env.DEV) {
       return sim
     },
     cam,
+    unlockAll: UNLOCK_ALL,
   }
 }
 
@@ -373,7 +374,7 @@ function writeStored(key: string, value: string) {
 
 declare global {
   interface Window {
-    game?: { sim: Sim; cam: Camera }
+    game?: { sim: Sim; cam: Camera; unlockAll: boolean }
   }
 }
 
